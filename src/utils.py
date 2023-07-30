@@ -3,6 +3,12 @@ import numpy as np
 
 
 def inspect_head_env(env, n_steps=1):
+    """Inspect head of D4RL registered environments
+
+    Args:
+        env (OfflineEnv): A registered offline environment
+        n_steps (int, optional): Number of steps to print. Defaults to 1.
+    """
     # Verify the state, action, next state from environment
     obs = env.reset()
     print("0 Starting state: env.reset - ", obs)
@@ -15,6 +21,13 @@ def inspect_head_env(env, n_steps=1):
 
 
 def inspect_head_dataset(dataset, n_steps=1):
+    """Inspect head of D4RL offline dataset
+
+    Args:
+        dataset (dict): A dictionary of keys like 'observations',
+            'rewards', 'actions' etc.. 
+        n_steps (int, optional): Number of steps to print. Defaults to 1.
+    """
     # Each task is associated with a dataset
     # dataset contains observations, actions, rewards, terminals, and infos
 
@@ -35,10 +48,11 @@ def inspect_head_dataset(dataset, n_steps=1):
 
 def sequence_dataset(env, dataset=None, **kwargs):
     """
-    Returns an iterator through trajectories.
+    Returns an iterator through trajectories of D4RL 
+    directed dataset.
 
     Args:
-        env: An OfflineEnv object.
+        env (OfflineEnv): An gym registered offile environment.
         dataset: An optional dataset to pass in for processing. If None,
             the dataset will default to env.get_dataset()
         **kwargs: Arguments to pass to env.get_dataset().
@@ -54,14 +68,10 @@ def sequence_dataset(env, dataset=None, **kwargs):
         dataset = env.get_dataset(**kwargs)
 
     N = dataset['rewards'].shape[0]
-    
+
     data_ = collections.defaultdict(list)
 
-    # The newer version of the dataset adds an explicit
-    # timeouts field. Keep old method for backwards compatability.
-    use_timeouts = False
-    if 'timeouts' in dataset:
-        use_timeouts = True
+    use_timeouts = 'timeouts' in dataset
 
     episode_step = 0
     for i in range(N):
@@ -78,10 +88,58 @@ def sequence_dataset(env, dataset=None, **kwargs):
 
         if done_bool or final_timestep:
             episode_step = 0
-            episode_data = {}
-            for k in data_:
-                episode_data[k] = np.array(data_[k])
-            yield episode_data
+            yield {k: np.array(data_[k]) for k in data_}
             data_ = collections.defaultdict(list)
 
         episode_step += 1
+
+
+def get_sequence_dataset(self, env, split_length=None):
+    """Collect all trajectories in a directed D4RL dataset into
+    a numpy array.
+
+    Args:
+        env (OfflineEnv): An gym registered offile environment.
+        split_length (_type_, optional): Split episodes into sequences of 
+            length split_length. Defaults to None.
+
+    Raises:
+        ValueError: Episode length is not divisible by split length
+
+    Returns:
+        np.ndaray: An array
+            shape: (-1, split_length, feat_dim)
+    """
+    key_features = ("observations", "actions", "rewards")
+
+    prev_episode_length = None
+    dataset = []
+
+    for episode in sequence_dataset(env):
+        episode_length = len(episode["rewards"])
+
+        # When split_length is None, episode lengths are preserved
+        split_length = split_length or episode_length
+
+        assert episode_length % split_length == 0, ValueError(
+            f"Episode length \
+            ({episode_length}) is not divisible by split length ({split_length})"
+        )
+
+        n_parts = episode_length // split_length
+        # Split observations, actions and rewards along time dimension
+        # (episode_length, feat_dim) -> (n_parts, split_length, feat_dim)
+        split_episodes = [
+            episode[key].reshape(n_parts, split_length, -1)
+            for key in key_features
+        ]
+
+        # Split observations, actions and rewards along feature dimension
+        dataset.append(np.concatenate(split_episodes, axis=2))
+
+        if prev_episode_length and prev_episode_length != episode_length:
+            raise ValueError("Episodes are of different lengths.")
+        else:
+            prev_episode_length = episode_length
+
+    return np.concatenate(dataset, axis=0)

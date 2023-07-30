@@ -127,18 +127,34 @@ class MultiHeadAttention(nn.Module):
 
 
 class AutoCorrelation(nn.Module):
-    """
-    AutoCorrelation Mechanism with the following two phases:
-    (1) period-based dependencies discovery
-    (2) time delay aggregation
+    """AutoCorrelation Mechanism with the following two phases:
+        (1) period-based dependencies discovery
+        (2) time delay aggregation
+
     This block can replace the self-attention family mechanism seamlessly.
     """
 
-    def __init__(self, embed_dim, n_heads, corr_factor, *args, **kwargs) -> None:
+    def __init__(
+        self, embed_dim: int, n_heads: int, corr_factor: float, *args, **kwargs
+    ) -> None:
+        """
+        Args:
+            embed_dim (int): Dimensionality of embedding space of sequence elements.
+            n_heads (int): Number of autocorrelation heads.
+            corr_factor (float): A hyperparameter that controls number of top
+                auto correlation delays considered.
+
+                k = int(corr_factor * math.log(seq_length))
+
+        """
         super().__init__(*args, **kwargs)
 
         self.embed_dim = embed_dim
         self.n_heads = n_heads
+
+        assert 1 <= corr_factor <= 3, ValueError(
+            "Correlation factor not in range [1, 3]"
+        )
         self.corr_factor = corr_factor
 
         assert embed_dim % n_heads == 0, ValueError(
@@ -153,7 +169,7 @@ class AutoCorrelation(nn.Module):
 
         self.W_o = nn.Linear(self.embed_dim, self.embed_dim, bias=False)
 
-    def forward(self, queries, keys, values, attn_mask):
+    def forward(self, queries, keys, values, attn_mask=None):
         """_summary_
 
         Args:
@@ -163,12 +179,13 @@ class AutoCorrelation(nn.Module):
                 shape: (batch_size, seq_length_kv, embed_dim)
             values (_type_): _description_
                 shape: (batch_size, seq_length_kv, embed_dim)
-            mask (_type_): _description_
+            attn_mask (_type_): _description_
 
         Returns:
             _type_: _description_
                 shape: (batch_size, seq_length_q, embed_dim)
         """
+        
         Q = self.split_heads(self.W_q(queries))
         K = self.split_heads(self.W_k(keys))
         V = self.split_heads(self.W_v(values))
@@ -180,7 +197,7 @@ class AutoCorrelation(nn.Module):
         )
         # ? Why are the masks not used?
         multihead_context = self.time_delay_aggregation(
-            auto_corr_scores, V.permute(0, 2, 3, 1).contagious()
+            auto_corr_scores, V.permute(0, 2, 3, 1).contiguous()
         )
 
         return self.W_o(self.combine_heads(multihead_context))
@@ -205,6 +222,7 @@ class AutoCorrelation(nn.Module):
 
         # Find top k autocorrelations delays
         k = int(self.corr_factor * math.log(seq_length))
+
         auto_corr_mean = torch.mean(
             auto_corr_scores, dim=(1, 2)
         )  # (batch_size, seq_length)
@@ -222,7 +240,7 @@ class AutoCorrelation(nn.Module):
 
         # Applying softmax to normalize and produce probabilities
         topk_auto_corr_probs = torch.softmax(topk_auto_corr, dim=-1)  # (batch_size, k)
-
+        
         # Compute and aggregate values.roll(delay) * topk_auto_corr_probs(delay)
         # at each top delay values.
         weighted_values_agg = torch.zeros_like(values).float()
@@ -255,7 +273,7 @@ class AutoCorrelation(nn.Module):
                 values_at_delay = torch.gather(
                     values_tiled, dim=-1, index=indices_wo_delay
                 )  # (batch_size, self.n_heads, self.head_dim, seq_length)
-
+            
             # For each sample in batch, repeat the k'th normalized auto corr value
             # across all heads, embeddings and sequence elements.
             # Equivalant to broadcasting of topk_auto_corr_probs[:, i].view(-1, 1, 1, 1)
@@ -282,14 +300,14 @@ class AutoCorrelation(nn.Module):
 
         Args:
             queries (_type_): _description_
-                shape: (batch_size, n_heads, embed_dim, seq_length)
+                shape: (batch_size, n_heads, head_dim, seq_length)
             keys (_type_): _description_
-                shape: (batch_size, n_heads, embed_dim, seq_length)
+                shape: (batch_size, n_heads, head_dim, seq_length)
 
         Returns:
             _type_: Each index in the sequence length dimension corresponds
             to different lag in {1, · · · , L}.
-                shape: (batch_size, n_heads, embed_dim, seq_length)
+                shape: (batch_size, n_heads, head_dim, seq_length)
         """
         # Transform input to frquency domain
         queries_freq = torch.fft.rfft(queries, dim=-1)
@@ -308,18 +326,16 @@ class AutoCorrelation(nn.Module):
 
         x.shape = (batch_size, seq_length, embed_dim)
           -> (batch_size, seq_length, n_heads, head_dim)
-          -> (batch_size, n_heads, seq_length, head_dim)
 
         Args:
             x (_type_): _description_
+                shape: (batch_size, seq_length, n_heads, head_dim)
 
         Returns:
             _type_: _description_
         """
         batch_size, seq_length, _ = x.size()
-        return x.view(batch_size, seq_length, self.n_heads, self.head_dim).transpose(
-            1, 2
-        )
+        return x.view(batch_size, seq_length, self.n_heads, self.head_dim)
 
     def combine_heads(self, x: torch.FloatTensor):
         """Concatenate output from each head to produce
@@ -345,20 +361,24 @@ class AutoCorrelation(nn.Module):
         to match the query sequence length by zero filling
         or truncation.
 
+        If len(query) > len(key) == len(value), then truncation,
+        else If len(query) < len(key) == len(value), zero padding on
+            the end of keys and values.
+
         Args:
             queries (_type_): _description_
-                shape: (batch_size, seq_length_q, n_heads, embed_dim)
+                shape: (batch_size, seq_length_q, n_heads, head_dim)
             keys (_type_): _description_
-                shape: (batch_size, seq_length_kv, n_heads, embed_dim)
+                shape: (batch_size, seq_length_kv, n_heads, head_dim)
             values (_type_): _description_
-                shape: (batch_size, seq_length_kv, n_heads, embed_dim)
+                shape: (batch_size, seq_length_kv, n_heads, head_dim)
 
         Returns:
             tuple[torch.FloatTensor, 2]: length aligned keys and values
                 0 :
-                    shape: (batch_size, seq_length_q, n_heads, embed_dim)
+                    shape: (batch_size, seq_length_q, n_heads, head_dim)
                 1 :
-                    shape: (batch_size, seq_length_q, n_heads, embed_dim)
+                    shape: (batch_size, seq_length_q, n_heads, head_dim)
         """
         seq_length_q = queries.size(1)
         seq_length_kv = keys.size(1)

@@ -1,60 +1,65 @@
-import gym
-#import gymnasium as gym
-import d4rl # Import required to register environments, you may need to also import the submodule
-from d4rl import gym_mujoco
-import time
-import collections
-from .utils import inspect_head_dataset, sequence_dataset
+# import gymnasium as gym
+import d4rl  # Import required to register environments, you may need to also import the submodule
 import numpy as np
+import torch
+import torch.nn as nn
+from d4rl import gym_mujoco
+import torchvision.transforms as transforms
+from torch.utils.data import DataLoader, random_split
 
-
-def get_sequence_dataset(env, seq_length=None):
-    key_features = ("observations", "actions", "rewards")
-    
-    prev_episode_length = None
-    dataset = []
-
-    for episode in sequence_dataset(env):
-        episode_length = len(episode["rewards"])
-
-        # When seq_length is None, episode lengths are preserved
-        seq_length = seq_length or episode_length
-
-        assert episode_length % seq_length == 0, ValueError(f"Episode length \
-            ({episode_length}) are not divisible by sequence length ({seq_length})")
-        
-        n_parts = episode_length // seq_length
-        # Split observations, actions and rewards along time dimension 
-        # (episode_length, feat_dim) -> (n_parts, seq_length, feat_dim)
-        parts = [episode[key].reshape(n_parts, seq_length, -1) for key in key_features]
-
-        # Split observations, actions and rewards along feature dimension 
-        dataset.append(np.concatenate(parts, axis=2))
-
-        if prev_episode_length and prev_episode_length != episode_length:
-            raise ValueError("Episodes are of different lengths.")
-        else:
-            prev_episode_length = episode_length
-
-    return np.concatenate(dataset, axis=0)
-
+from .data.dataset import D4RLSequenceDataset
+from .transforms import RandomCropSequence
+from .assets import Autoformer
+from .core.config import ExperimentConfig, AutoformerConfig, D4RLDatasetConfig
+from .learning.trainer import Trainer
 
 def main():
-    # Create the environment
-    env = gym.make('halfcheetah-medium-v2')
-    
-    obs_space = env.observation_space
-    action_space = env.action_space
+    config = ExperimentConfig()
+    config.model = AutoformerConfig()
+    config.dataset = D4RLDatasetConfig(id="halfcheetah-medium-v2")
 
-    print(f"The observation space: env - {obs_space}")
-    print(f"The action space: env - {action_space}")
-    
-    print(f"Maximum episode space: env - {env._max_episode_steps}")
+    transform = transforms.Compose([RandomCropSequence(config.dataset.crop_length)])
+    dataset = D4RLSequenceDataset(config.dataset.id, source_ratio=config.dataset.source_ratio, transform=transform)
 
+    train_dataset, valid_datset = random_split(
+        dataset, [1 - config.dataset.validation_ratio, config.dataset.validation_ratio]
+    )
+
+    source, target = train_dataset[0]
+    src_seq_length, feat_dim = source.size()
+    tgt_seq_length = target.size(0)
+
+    train_loader = DataLoader(
+        train_dataset, batch_size=config.dataloader.batch_size, shuffle=config.dataloader.shuffle
+    )
+    valid_loader = DataLoader(
+        valid_datset, batch_size=config.dataloader.batch_size, shuffle=config.dataloader.shuffle
+    )
+
+    model = Autoformer(
+        feat_dim=feat_dim,
+        embed_dim=config.model.embed_dim,
+        expanse_dim=config.model.expanse_dim,
+        kernel_size=config.model.kernel_size,
+        corr_factor=config.model.corr_factor,
+        n_enc_blocks=config.model.n_enc_blocks,
+        n_dec_blocks=config.model.n_dec_blocks,
+        n_heads=config.model.n_heads,
+        src_seq_length=src_seq_length,
+        tgt_seq_length=tgt_seq_length,
+        cond_prefix_frac=config.model.cond_prefix_frac,
+        dropout=config.model.dropout,
+    ).to(config.device)
+
+    criterion = nn.MSELoss()
+    optimizer = torch.optim.SGD(model.parameters(), lr=config.optimizer.lr)
     
-    dataset = get_sequence_dataset(env)
-    print(dataset.shape)
+    trainer = Trainer(train_loader=train_loader, valid_loader=valid_loader, model=model, criterion=criterion, optimizer=optimizer, config=config)
+
+    for _ in range(config.n_epochs):
+        result = trainer.step()
+        if result.incumbent_found:
+            trainer.save_checkpoint(result.model_dump())
 
 if __name__ == "__main__":
     main()
-    
