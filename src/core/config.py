@@ -31,12 +31,12 @@ class DataLoaderConfig(BaseSettings):
     shuffle: bool = True
 
 class OptimizerConfig(BaseSettings):
-    lr: float = 0.1
+    lr: float = 0.0001
 
 class ExperimentConfig(BaseSettings):
     name: str = ""
     random_seed: int = 42
-    n_epochs: int = 10
+    n_epochs: int = 300
     device: torch.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
     dataset: DatasetConfig = DatasetConfig()

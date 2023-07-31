@@ -5,3 +5,4 @@ class EpochResult(BaseModel):
     valid_loss: float
     epoch: int
     incumbent_loss: float
+    incumbent_found: bool

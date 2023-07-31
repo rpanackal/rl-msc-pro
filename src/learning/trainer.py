@@ -1,14 +1,6 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Created on Thu Feb 11 04:45:16 2021
-
-@author: karma
-"""
-
 import os
 from datetime import datetime
-
+import json
 import torch
 from colorama import Fore, init
 from ..core.datamodels import EpochResult
@@ -72,9 +64,9 @@ class Trainer:
             if batch_id % 10 == 0:
                 loss, current = loss.item(), (batch_id + 1) * batch_size
                 print(
-                    f"Training - Epoch: {self.epoch} | \
-                    Loss at iteration {batch_id}: {loss:>7f} \
-                    Progress: [{current:>5d}/{datset_size:>5d}]"
+                    f"Training - Epoch: {self.epoch} | "
+                    + f"Loss at iteration {batch_id}: {loss:f} | "
+                    + f"Progress: [{current:d}/{datset_size:d}]"
                 )
 
         return epoch_loss / n_batches
@@ -114,9 +106,9 @@ class Trainer:
                 if batch_id % 10 == 0:
                     loss, current = loss.item(), (batch_id + 1) * batch_size
                     print(
-                        f"Validation - Epoch: {self.epoch} | \
-                        Loss at iteration {batch_id}: {loss:>7f} \
-                        Progress: [{current:>5d}/{datset_size:>5d}]"
+                        f"Validation - Epoch: {self.epoch} | "
+                        + f"Loss at iteration {batch_id}: {loss:f} | " 
+                        + f"Progress: [{current:d}/{datset_size:d}]"
                     )
 
         return epoch_loss / n_batches
@@ -135,19 +127,19 @@ class Trainer:
         # train the model
         train_loss = self.train_epoch()
 
-        # evaluate the model
+        # validate the model
         valid_loss = self.validate_epoch()
 
-        incumbent_found = valid_loss > self.incumbent_loss
+        incumbent_found = valid_loss < self.incumbent_loss
         if incumbent_found:
             self.incumbent_loss = valid_loss
 
         print(
             Fore.GREEN
-            + f"\nEpoch: {self.epoch} complete | \
-            Training Loss: {train_loss:>7f} | \
-            Validation Loss: {valid_loss:>7f} | \
-            Incumbent Loss: {self.incumbent_loss:>7f}\n"
+            + f"\nEpoch: {self.epoch} complete | "
+            + f"Training Loss: {train_loss:f} | "
+            + f"Validation Loss: {valid_loss:f} | "
+            + f"Incumbent Loss: {self.incumbent_loss:f}\n"
         )
 
         return EpochResult(**{
@@ -170,16 +162,19 @@ class Trainer:
         os.makedirs(trail_dir, exist_ok=True)
 
         checkpoint_path = trail_dir / "checkpoint.pth"
-        
-        checkpoint = result
-        checkpoint["model_state_dict"] = self.model.state_dict()
-        checkpoint["optimizer_state_dict"] = self.optimizer.state_dict()
-
+        checkpoint = {
+            "model_state_dict": self.model.state_dict(),
+            "optimizer_state_dict": self.optimizer.state_dict()
+        }   
         torch.save(checkpoint, str(checkpoint_path))
 
         config_path = trail_dir / "configuration.json"
         with open(config_path, "w") as config_file:
             config_file.write(self.config.model_dump_json(exclude={"device"}))
+
+        result_path = trail_dir / "result.json"
+        with open(result_path, "w") as result_file:
+            result_file.write(result.model_dump_json())
 
     def load_checkpoint(self, path):
         """To load model checkpoint at any epoch of a trial by loading
