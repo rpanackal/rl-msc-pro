@@ -1,0 +1,145 @@
+import collections
+import numpy as np
+
+
+def inspect_head_env(env, n_steps=1):
+    """Inspect head of D4RL registered environments
+
+    Args:
+        env (OfflineEnv): A registered offline environment
+        n_steps (int, optional): Number of steps to print. Defaults to 1.
+    """
+    # Verify the state, action, next state from environment
+    obs = env.reset()
+    print("0 Starting state: env.reset - ", obs)
+    
+    for i in range(n_steps):
+        action = env.action_space.sample()
+        obs, reward, done, info = env.step(action)
+        print(f"{i} Action taken: env.action_space.sample() - ", action)
+        print(f"{i+1} State: env.step - ", obs)
+
+
+def inspect_head_dataset(dataset, n_steps=1):
+    """Inspect head of D4RL offline dataset
+
+    Args:
+        dataset (dict): A dictionary of keys like 'observations',
+            'rewards', 'actions' etc.. 
+        n_steps (int, optional): Number of steps to print. Defaults to 1.
+    """
+    # Each task is associated with a dataset
+    # dataset contains observations, actions, rewards, terminals, and infos
+
+    for key, value in dataset.items():
+        try:
+            length = len(value)
+        except Exception:
+            length = None
+
+        print(f"{key} type : {type(value)} length: {length}")
+    
+    print("0 Starting state: dataset['observations'][i] - ", dataset['observations'][0])
+    for i in range(n_steps):
+        print(f"{i} Action taken: dataset['actions'][i] - ", dataset['actions'][i])
+
+        print(f"{i + 1} State: dataset['next_observations'][i]- ", dataset['next_observations'][i])
+        print(f"{i + 1} State: dataset['observations'][i+1] - ", dataset['observations'][i+1])
+
+def sequence_dataset(env, dataset=None, **kwargs):
+    """
+    Returns an iterator through trajectories of D4RL 
+    directed dataset.
+
+    Args:
+        env (OfflineEnv): An gym registered offile environment.
+        dataset: An optional dataset to pass in for processing. If None,
+            the dataset will default to env.get_dataset()
+        **kwargs: Arguments to pass to env.get_dataset().
+
+    Returns:
+        An iterator through dictionaries with keys:
+            observations
+            actions
+            rewards
+            terminals
+    """
+    if dataset is None:
+        dataset = env.get_dataset(**kwargs)
+
+    N = dataset['rewards'].shape[0]
+
+    data_ = collections.defaultdict(list)
+
+    use_timeouts = 'timeouts' in dataset
+
+    episode_step = 0
+    for i in range(N):
+        done_bool = bool(dataset['terminals'][i])
+        if use_timeouts:
+            final_timestep = dataset['timeouts'][i]
+        else:
+            final_timestep = (episode_step == env._max_episode_steps - 1)
+
+        for key, value in dataset.items():
+            # We only retrive from values that span N items
+            if type(value) is np.ndarray and len(value) == N:
+                data_[key].append(value[i])
+
+        if done_bool or final_timestep:
+            episode_step = 0
+            yield {k: np.array(data_[k]) for k in data_}
+            data_ = collections.defaultdict(list)
+
+        episode_step += 1
+
+
+def get_sequence_dataset(self, env, split_length=None):
+    """Collect all trajectories in a directed D4RL dataset into
+    a numpy array.
+
+    Args:
+        env (OfflineEnv): An gym registered offile environment.
+        split_length (_type_, optional): Split episodes into sequences of 
+            length split_length. Defaults to None.
+
+    Raises:
+        ValueError: Episode length is not divisible by split length
+
+    Returns:
+        np.ndaray: An array
+            shape: (-1, split_length, feat_dim)
+    """
+    key_features = ("observations", "actions", "rewards")
+
+    prev_episode_length = None
+    dataset = []
+
+    for episode in sequence_dataset(env):
+        episode_length = len(episode["rewards"])
+
+        # When split_length is None, episode lengths are preserved
+        split_length = split_length or episode_length
+
+        assert episode_length % split_length == 0, ValueError(
+            f"Episode length \
+            ({episode_length}) is not divisible by split length ({split_length})"
+        )
+
+        n_parts = episode_length // split_length
+        # Split observations, actions and rewards along time dimension
+        # (episode_length, feat_dim) -> (n_parts, split_length, feat_dim)
+        split_episodes = [
+            episode[key].reshape(n_parts, split_length, -1)
+            for key in key_features
+        ]
+
+        # Split observations, actions and rewards along feature dimension
+        dataset.append(np.concatenate(split_episodes, axis=2))
+
+        if prev_episode_length and prev_episode_length != episode_length:
+            raise ValueError("Episodes are of different lengths.")
+        else:
+            prev_episode_length = episode_length
+
+    return np.concatenate(dataset, axis=0)

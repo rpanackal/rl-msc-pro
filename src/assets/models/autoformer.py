@@ -1,16 +1,27 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+import math
+
 from ..layers import (
-    PositionalEncoding,
     AutoCorrelation,
-    SeriesDecomposition,
     ContinuousEmbedding,
+    PositionalEncoding,
+    SeriesDecomposition,
 )
 
 
 class FeedForward(nn.Module):
-    def __init__(self, embed_dim, hidden_dim, dropout, *args, **kwargs) -> None:
+    def __init__(
+        self, embed_dim: int, hidden_dim: int, dropout: float, *args, **kwargs
+    ) -> None:
+        """_summary_
+
+        Args:
+            embed_dim (int): Dimensionality of embedding space of sequence elements.
+            hidden_dim (int): Dimensionality of space to which embeddings are projected to,
+                and then back from.
+            dropout (float): _description_
+        """
         super().__init__(*args, **kwargs)
 
         self.fc1 = nn.Linear(embed_dim, hidden_dim)
@@ -24,13 +35,18 @@ class FeedForward(nn.Module):
 
 
 class LayerNorm(nn.Module):
-    """
-    Special designed layer normalization for the seasonal part, calculated as:
+    """Special designed layer normalization for the seasonal part, calculated as:
+
     LayerNorm(x) = nn.LayerNorm(x) - torch.mean(nn.LayerNorm(x))
     """
 
-    def __init__(self, embed_dim):
-        super().__init__()
+    def __init__(self, embed_dim: int, *args, **kwargs) -> None:
+        """_summary_
+
+        Args:
+            embed_dim (int): Dimensionality of embedding space of sequence elements.
+        """
+        super().__init__(*args, **kwargs)
         self.layernorm = nn.LayerNorm(embed_dim)
 
     def forward(self, x):
@@ -44,38 +60,51 @@ class LayerNorm(nn.Module):
 class EncoderBlock(nn.Module):
     def __init__(
         self,
-        embed_dim,
-        hidden_dim,
-        kernel_size,
-        corr_factor,
-        n_heads,
-        dropout,
+        embed_dim: int,
+        expanse_dim: int,
+        kernel_size: int,
+        corr_factor: float,
+        n_heads: int,
+        dropout: float,
         *args,
         **kwargs
     ) -> None:
+        """_summary_
+
+        Args:
+            embed_dim (int): Dimensionality of embedding space of sequence elements.
+            expanse_dim (int): Dimensionality of space to which embeddings are projected to,
+                then back from within feed forward layer.
+            kernel_size (int): size of the window used for the average pooling to
+                compute the trend component.
+            corr_factor (float): A hyperparameter that controls number of top
+                auto correlation delays considered.
+            n_heads (int): Number of autocorrelation heads.
+            dropout (float): _description_
+        """
         super().__init__(*args, **kwargs)
 
-        self.auto_corr = AutoCorrelation(corr_factor, embed_dim, n_heads)
-        self.series_decomp = SeriesDecomposition(kernel_size)
-        self.dropout = nn.Dropout(dropout)
-        self.ff = FeedForward(embed_dim, hidden_dim, dropout)
-        self.layer_norm = LayerNorm(embed_dim)
+        self.auto_corr = AutoCorrelation(corr_factor=corr_factor, embed_dim=embed_dim, n_heads=n_heads)
+        self.series_decomp = SeriesDecomposition(kernel_size=kernel_size)
+        self.dropout = nn.Dropout(p=dropout)
+        self.ff = FeedForward(embed_dim=embed_dim, hidden_dim=expanse_dim, dropout=dropout)
+        self.layer_norm = LayerNorm(embed_dim=embed_dim)
 
-    def forward(self, x, attn_mask):
+    def forward(self, x, attn_mask=None):
         """_summary_
 
         Args:
             x (_type_): _description_
                 shape: (batch_size, seq_length, embed_dim)
             attn_mask (_type_): _description_
-            head_mask (_type_): _description_
 
         Returns:
             _type_: _description_
+                shape: (batch_size, seq_length, embed_dim)
         """
-        context = self.auto_corr(x, x, x, attn_mask)
+        attn_context = self.auto_corr(x, x, x, attn_mask)
 
-        x, _ = self.series_decomp(x + self.dropout(context))
+        x, _ = self.series_decomp(x + self.dropout(attn_context))
 
         x, _ = self.series_decomp(x + self.dropout(self.ff(x)))
 
@@ -85,26 +114,41 @@ class EncoderBlock(nn.Module):
 class DecoderBlock(nn.Module):
     def __init__(
         self,
-        embed_dim,
-        hidden_dim,
-        trend_dim,
-        kernel_size,
-        corr_factor,
-        n_heads,
-        dropout,
+        embed_dim: int,
+        feat_dim: int,
+        expanse_dim: int,
+        kernel_size: int,
+        corr_factor: float,
+        n_heads: int,
+        dropout: float,
         *args,
         **kwargs
     ) -> None:
+        """_summary_
+
+        Args:
+            embed_dim (int): Dimensionality of embedding space of sequence elements.
+            feat_dim (int): Dimensionality of space to which trend components are finally
+                projected to by decoder layer.
+            expanse_dim (int): Dimensionality of space to which embeddings are projected to,
+                then back from within feed forward layer.
+            kernel_size (int): size of the window used for the average pooling to
+                compute the trend component.
+            corr_factor (float): A hyperparameter that controls number of top
+                auto correlation delays considered.
+            n_heads (int): Number of autocorrelation heads.
+            dropout (float): _description_
+        """
         super().__init__(*args, **kwargs)
 
-        self.self_auto_corr = AutoCorrelation(corr_factor, embed_dim, n_heads)
-        self.cross_auto_corr = AutoCorrelation(corr_factor, embed_dim, n_heads)
-        self.series_decomp = SeriesDecomposition(kernel_size)
-        self.ff = FeedForward(embed_dim, hidden_dim, dropout)
-        self.dropout = nn.Dropout(dropout)
+        self.self_auto_corr = AutoCorrelation(corr_factor=corr_factor, embed_dim=embed_dim, n_heads=n_heads)
+        self.cross_auto_corr = AutoCorrelation(corr_factor=corr_factor, embed_dim=embed_dim, n_heads=n_heads)
+        self.series_decomp = SeriesDecomposition(kernel_size=kernel_size)
+        self.ff = FeedForward(embed_dim=embed_dim, hidden_dim=expanse_dim, dropout=dropout)
+        self.dropout = nn.Dropout(p=dropout)
         self.trend_projection = nn.Conv1d(
             in_channels=embed_dim,
-            out_channels=trend_dim,
+            out_channels=feat_dim,
             kernel_size=3,
             stride=1,
             padding=1,
@@ -113,53 +157,89 @@ class DecoderBlock(nn.Module):
         )
         self.layer_norm = LayerNorm(embed_dim)
 
-    def forward(self, x, enc_output, src_mask, tgt_mask):
-        context = self.self_auto_corr(x, x, x, tgt_mask)
-        x, trend1 = self.series_decomp(x + self.dropout(context))
+    def forward(self, x, enc_output, cross_mask=None, tgt_mask=None):
+        """_summary_
 
-        context = self.cross_auto_corr(x, enc_output, enc_output, src_mask)
-        x, trend2 = self.series_decomp(x + self.dropout(context))
+        Args:
+            x (_type_): _description_
+                shape: (batch_size, src_seq_length, embed_dim)
+            enc_output (_type_): _description_
+                shape: (batch_size, prefix_length + tgt_seq_length, embed_dim)
+            cross_mask (_type_, optional): _description_. Defaults to None.
+            tgt_mask (_type_, optional): _description_. Defaults to None.
+
+        Returns:
+            _type_: _description_
+        """
+        attn_context = self.self_auto_corr(x, x, x, tgt_mask)
+        x, trend1 = self.series_decomp(x + self.dropout(attn_context))
+
+        attn_context = self.cross_auto_corr(x, enc_output, enc_output, cross_mask)
+        x, trend2 = self.series_decomp(x + self.dropout(attn_context))
 
         x, trend3 = self.series_decomp(x + self.dropout(self.ff(x)))
-
         x = self.layer_norm(x)
-        overall_trend = self.trend_projection(
-            (trend1 + trend2 + trend3).permute(0, 1, 2)
-        ).permute(0, 1, 2)
 
-        return x, overall_trend
+        block_trend = (trend1 + trend2 + trend3).permute(0, 2, 1)
+        block_trend = self.trend_projection(block_trend).permute(0, 2, 1)
+
+        return x, block_trend
 
 
 class Encoder(nn.Module):
     def __init__(
         self,
-        embed_dim,
-        hidden_dim,
-        kernel_size,
-        corr_factor,
-        n_blocks,
-        n_heads,
-        dropout,
+        embed_dim: int,
+        expanse_dim: int,
+        kernel_size: int,
+        corr_factor: float,
+        n_blocks: int,
+        n_heads: int,
+        dropout: float,
         *args,
         **kwargs
     ) -> None:
+        """_summary_
+
+        Args:
+            embed_dim (int): Dimensionality of embedding space of sequence elements.
+            expanse_dim (int): Dimensionality of space to which embeddings are projected to,
+                then back from within feed forward layer.
+            kernel_size (int): size of the window used for the average pooling to
+                compute the trend component.
+            corr_factor (float): A hyperparameter that controls number of top
+                auto correlation delays considered.
+            n_blocks (int): Number of encoder blocks.
+            n_heads (int): Number of autocorrelation heads.
+            dropout (float): _description_
+        """
         super().__init__(*args, **kwargs)
 
         self.enc_blocks = nn.ModuleList(
             [
                 EncoderBlock(
-                    embed_dim,
-                    hidden_dim,
-                    kernel_size,
-                    corr_factor,
-                    n_heads,
-                    dropout,
+                    embed_dim=embed_dim,
+                    expanse_dim=expanse_dim,
+                    kernel_size=kernel_size,
+                    corr_factor=corr_factor,
+                    n_heads=n_heads,
+                    dropout=dropout,
                 )
                 for _ in range(n_blocks)
             ]
         )
 
-    def forward(self, x, attn_mask):
+    def forward(self, x, attn_mask=None):
+        """_summary_
+
+        Args:
+            x (_type_): _description_
+                shape: (batch_size, seq_length, embed_dim)
+            attn_mask (_type_, optional): _description_. Defaults to None.
+
+        Returns:
+            _type_: _description_
+        """
         for enc_block in self.enc_blocks:
             x = enc_block(x, attn_mask)
 
@@ -170,8 +250,8 @@ class Decoder(nn.Module):
     def __init__(
         self,
         embed_dim,
-        hidden_dim,
-        trend_dim,
+        feat_dim,
+        expanse_dim,
         kernel_size,
         corr_factor,
         n_blocks,
@@ -180,76 +260,201 @@ class Decoder(nn.Module):
         *args,
         **kwargs
     ) -> None:
+        """_summary_
+
+        Args:
+            embed_dim (int): Dimensionality of embedding space of sequence elements.
+            expanse_dim (int): Dimensionality of space to which embeddings are projected to,
+                then back from within feed forward layer.
+            feat_dim (int): Dimensionality of space to which trend and seasonal components are
+                finally projected to by decoder.
+            kernel_size (int): size of the window used for the average pooling to
+                compute the trend component.
+            corr_factor (float): A hyperparameter that controls number of top
+                auto correlation delays considered.
+            n_blocks (int): Number of decoder blocks.
+            n_heads (int): Number of autocorrelation heads.
+            dropout (float): _description_
+        """
         super().__init__(*args, **kwargs)
 
         self.decoder_blocks = nn.ModuleList(
             [
-                EncoderBlock(
-                    embed_dim,
-                    hidden_dim,
-                    trend_dim,
-                    kernel_size,
-                    corr_factor,
-                    n_heads,
-                    dropout,
+                DecoderBlock(
+                    embed_dim=embed_dim,
+                    feat_dim=feat_dim,
+                    expanse_dim=expanse_dim,
+                    kernel_size=kernel_size,
+                    corr_factor=corr_factor,
+                    n_heads=n_heads,
+                    dropout=dropout,
                 )
                 for _ in range(n_blocks)
             ]
         )
+        self.seasonal_projection = nn.Linear(embed_dim, feat_dim, bias=True)
 
-    def forward(self, x, trend_residual, enc_output, src_mask, tgt_mask):
+    def forward(self, x_seasonal, x_trend, enc_output, cross_mask=None, tgt_mask=None):
+        """_summary_
+
+        Args:
+            x_seasonal (_type_): _description_
+                shape: (batch_size, pefex_length + tgt_seq_length, embed_dim)
+            x_trend (_type_): _description_
+                shape: (batch_size, prefix_length + tgt_seq_length, embed_dim)
+            enc_output (_type_): _description_
+                shape: (batch_size, src_seq_length, embed_dim)
+            cross_mask (_type_, optional): _description_. Defaults to None.
+            tgt_mask (_type_, optional): _description_. Defaults to None.
+
+        Returns:
+            _type_: _description_
+        """
+        trend_residual = x_trend
+
         for dec_block in self.decoder_blocks:
-            x, trend = dec_block(x, enc_output, src_mask, tgt_mask)
+            x_seasonal, trend = dec_block(x_seasonal, enc_output, cross_mask, tgt_mask)
 
             trend_residual += trend
 
-        return x
+        trend_final = trend_residual
+        return self.seasonal_projection(x_seasonal), trend_final
 
 
 class Autoformer(nn.Module):
     def __init__(
         self,
-        src_feat_dim,
-        tgt_feat_dim,
-        embed_dim,
-        hidden_dim,
-        trend_dim,
-        kernel_size,
-        corr_factor,
-        n_enc_blocks,
-        n_dec_blocks,
-        n_heads,
-        max_seq_length,
-        dropout,
+        feat_dim: int,
+        embed_dim: int,
+        expanse_dim: int,
+        kernel_size: int,
+        corr_factor: float,
+        n_enc_blocks: int,
+        n_dec_blocks: int,
+        n_heads: int,
+        src_seq_length: int,
+        tgt_seq_length: int,
+        cond_prefix_frac: float,
+        dropout: float,
         *args,
         **kwargs
     ) -> None:
-        super().__init__(*args, **kwargs)
+        """_summary_
 
-        self.enc_embedding = ContinuousEmbedding(src_feat_dim, embed_dim)
-        self.dec_embedding = ContinuousEmbedding(tgt_feat_dim, embed_dim)
-        self.positional_encoding = PositionalEncoding(embed_dim, max_seq_length)
+        Args:
+            feat_dim (int): Feature dimension of input and target
+                sequence elements
+            embed_dim (int): Dimensionality of embedding space of sequence elements.
+            expanse_dim (int): Dimensionality of space to which embeddings are projected to,
+                then back from within feed forward layer.
+            kernel_size (int): size of the window used for the average pooling to
+                compute the trend component.
+            corr_factor (float): A hyperparameter that controls number of top
+                auto correlation delays considered.
+            n_enc_blocks (int): Number of encoder blocks.
+            n_dec_blocks (int): Number of decoder blocks.
+            n_heads (int): Number of autocorrelation heads.
+            src_seq_length (int): Length of source sequence
+            tgt_seq_length (int): Length of target sequence
+            cond_prefix_frac (float): The fraction of the source sequence's ending used
+                as a conditional prefix for the decoder input, influencing the target
+                prediction.
+            dropout (float): _description_
+        """
+        super().__init__(*args, **kwargs)
+        self.feat_dim = feat_dim
+
+        self.tgt_seq_length = tgt_seq_length
+
+        assert 0 <= cond_prefix_frac <= 1, ValueError(
+            "Conditional prefix fraction must be in range [0,1]"
+        )
+        self.prefix_length = math.floor(src_seq_length * cond_prefix_frac)
+
+        self.enc_embedding = ContinuousEmbedding(feat_dim=feat_dim, embed_dim=embed_dim)
+        self.dec_embedding = ContinuousEmbedding(feat_dim=feat_dim, embed_dim=embed_dim)
+        self.positional_encoding = PositionalEncoding(
+            embed_dim=embed_dim, max_seq_length=(src_seq_length + tgt_seq_length)
+        )
+        self.series_decomp = SeriesDecomposition(kernel_size=kernel_size)
 
         self.encoder = Encoder(
-            embed_dim,
-            hidden_dim,
-            kernel_size,
-            corr_factor,
-            n_enc_blocks,
-            n_heads,
-            dropout,
+            embed_dim=embed_dim,
+            expanse_dim=expanse_dim,
+            kernel_size=kernel_size,
+            corr_factor=corr_factor,
+            n_blocks=n_enc_blocks,
+            n_heads=n_heads,
+            dropout=dropout,
         )
 
         self.decoder = Decoder(
-            embed_dim,
-            hidden_dim,
-            trend_dim,
-            kernel_size,
-            corr_factor,
-            n_dec_blocks,
-            n_heads,
-            dropout,
+            embed_dim=embed_dim,
+            feat_dim=feat_dim,
+            expanse_dim=expanse_dim,
+            kernel_size=kernel_size,
+            corr_factor=corr_factor,
+            n_blocks=n_dec_blocks,
+            n_heads=n_heads,
+            dropout=dropout,
         )
 
-    def forward(self, x):
-        pass
+    def forward(
+        self,
+        x_enc: torch.FloatTensor,
+        src_mask=None,
+        cross_mask=None,
+        tgt_mask=None,
+    ):
+        """_summary_
+
+        Args:
+            x_enc (torch.FloatTensor): _description_
+                shape: (batch_size, seq_length, feat_dim)
+            src_mask (_type_, optional): _description_. Defaults to None.
+            cross_mask (_type_, optional): _description_. Defaults to None.
+            target_mask (_type_, optional): _description_. Defaults to None.
+        """
+        # initilialization section
+        seasonal_init, trend_init = self.decoder_initializer(x_enc)
+
+        # encoder section
+        enc_output = self.encoder(
+            self.positional_encoding(self.enc_embedding(x_enc)), attn_mask=src_mask
+        )
+
+        # decoder section
+        seasonal_part, trend_part = self.decoder(
+            x_seasonal=self.dec_embedding(seasonal_init),
+            x_trend=trend_init,
+            enc_output=enc_output,
+            cross_mask=cross_mask,
+            tgt_mask=tgt_mask,
+        )
+        
+        return (trend_part + seasonal_part)[:, -self.tgt_seq_length:, :]
+        
+    def decoder_initializer(self, x_enc):
+        """_summary_
+
+        Args:
+            x_enc (_type_): _description_
+
+        Returns:
+            _type_: _description_
+        """
+        batch_size = x_enc.size(0)
+
+        x_enc_season, x_enc_trend = self.series_decomp(x_enc)
+
+        mean = torch.mean(x_enc, dim=1, keepdim=True).repeat(1, self.tgt_seq_length, 1)
+        zeros = torch.zeros(
+            [batch_size, self.tgt_seq_length, self.feat_dim], device=x_enc.device
+        )
+
+        seasonal_init = torch.cat(
+            [x_enc_season[:, -self.prefix_length :, :], zeros], dim=1
+        )
+        trend_init = torch.cat([x_enc_trend[:, -self.prefix_length :, :], mean], dim=1)
+
+        return seasonal_init, trend_init
