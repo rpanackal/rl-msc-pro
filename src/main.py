@@ -36,6 +36,16 @@ def main():
         valid_datset, batch_size=config.dataloader.batch_size, shuffle=config.dataloader.shuffle
     )
 
+    # model = nn.Sequential(
+    #     nn.Linear(feat_dim, config.model.embed_dim),
+    #     nn.ReLU(),
+    #     SeriesDecomposition(config.model.kernel_size),
+    #     nn.Linear(config.model.embed_dim, config.model.embed_dim),
+    #     nn.ReLU(),
+    #     SeriesDecomposition(config.model.kernel_size),
+    #     nn.Linear(config.model.embed_dim, feat_dim),
+    # ).to(config.device)
+
     model = Autoformer(
         feat_dim=feat_dim,
         embed_dim=config.model.embed_dim,
@@ -52,14 +62,14 @@ def main():
     ).to(config.device)
 
     criterion = nn.MSELoss()
-    optimizer = torch.optim.SGD(model.parameters(), lr=config.optimizer.lr)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=config.optimizer.lr)
     
     trainer = Trainer(train_loader=train_loader, valid_loader=valid_loader, model=model, criterion=criterion, optimizer=optimizer, config=config)
 
     for _ in range(config.n_epochs):
         result = trainer.step()
         if result.incumbent_found:
-            trainer.save_checkpoint(result.model_dump())
+            trainer.save_checkpoint(result)
 
 if __name__ == "__main__":
     main()

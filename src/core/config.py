@@ -44,5 +44,3 @@ class ExperimentConfig(BaseSettings):
     optimizer: OptimizerConfig = OptimizerConfig()
     model: ModelConfig = ModelConfig()
     checkpoint_dir : PurePath = PurePath("src/checkpoints/")
-
-setting = ExperimentConfig().model_dump_json(exclude={"device"})
