@@ -1,25 +1,32 @@
 # import gymnasium as gym
 import d4rl  # Import required to register environments, you may need to also import the submodule
-import numpy as np
 import torch
 import torch.nn as nn
-from d4rl import gym_mujoco
 import torchvision.transforms as transforms
+from d4rl import gym_mujoco
+from pydantic_settings import BaseSettings
 from torch.utils.data import DataLoader, random_split
 
-from .data.dataset import D4RLSequenceDataset
-from .transforms import RandomCropSequence
 from .assets import Autoformer
-from .core.config import ExperimentConfig, AutoformerConfig, D4RLDatasetConfig
+from .core.config import AutoformerConfig, D4RLDatasetConfig, ExperimentConfig
+from .data.dataset import D4RLSequenceDataset
 from .learning.trainer import Trainer
+from .transforms import RandomCropSequence
 
-def main():
+
+def d4rl_halfcheetah_pipeline():
     config = ExperimentConfig()
     config.model = AutoformerConfig()
     config.dataset = D4RLDatasetConfig(id="halfcheetah-medium-v2")
 
-    transform = transforms.Compose([RandomCropSequence(config.dataset.crop_length)])
-    dataset = D4RLSequenceDataset(config.dataset.id, source_ratio=config.dataset.source_ratio, transform=transform)
+    # transform = transforms.Compose([RandomCropSequence(config.dataset.crop_length)])
+    transform = None
+    dataset = D4RLSequenceDataset(
+        config.dataset.id,
+        source_ratio=config.dataset.source_ratio,
+        transform=transform,
+        split_length=config.dataset.split_length,
+    )
 
     train_dataset, valid_datset = random_split(
         dataset, [1 - config.dataset.validation_ratio, config.dataset.validation_ratio]
@@ -30,21 +37,15 @@ def main():
     tgt_seq_length = target.size(0)
 
     train_loader = DataLoader(
-        train_dataset, batch_size=config.dataloader.batch_size, shuffle=config.dataloader.shuffle
+        train_dataset,
+        batch_size=config.dataloader.batch_size,
+        shuffle=config.dataloader.shuffle,
     )
     valid_loader = DataLoader(
-        valid_datset, batch_size=config.dataloader.batch_size, shuffle=config.dataloader.shuffle
+        valid_datset,
+        batch_size=config.dataloader.batch_size,
+        shuffle=config.dataloader.shuffle,
     )
-
-    # model = nn.Sequential(
-    #     nn.Linear(feat_dim, config.model.embed_dim),
-    #     nn.ReLU(),
-    #     SeriesDecomposition(config.model.kernel_size),
-    #     nn.Linear(config.model.embed_dim, config.model.embed_dim),
-    #     nn.ReLU(),
-    #     SeriesDecomposition(config.model.kernel_size),
-    #     nn.Linear(config.model.embed_dim, feat_dim),
-    # ).to(config.device)
 
     model = Autoformer(
         feat_dim=feat_dim,
@@ -63,13 +64,26 @@ def main():
 
     criterion = nn.MSELoss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.optimizer.lr)
-    
-    trainer = Trainer(train_loader=train_loader, valid_loader=valid_loader, model=model, criterion=criterion, optimizer=optimizer, config=config)
 
+    trainer = Trainer(
+        train_loader=train_loader,
+        valid_loader=valid_loader,
+        model=model,
+        criterion=criterion,
+        optimizer=optimizer,
+        config=config,
+    )
+
+    # Training
     for _ in range(config.n_epochs):
         result = trainer.step()
         if result.incumbent_found:
             trainer.save_checkpoint(result)
+
+
+def main():
+    d4rl_halfcheetah_pipeline()
+
 
 if __name__ == "__main__":
     main()

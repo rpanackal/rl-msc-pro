@@ -71,16 +71,16 @@ class D4RLSequenceDataset(Dataset):
         seq_length = episode.size(0)
         partition = math.floor(seq_length * self.source_ratio)
 
-        history, target = (
+        source, target = (
             episode[:partition],
             episode[partition:],
         )
 
         if self.source_transform:
-            history = self.source_transform(history)
+            source = self.source_transform(source)
         if self.target_transform:
             target = self.target_transform(target)
-        return history, target
+        return source, target
 
     def _get_sequence_dataset(self):
         dataset = []

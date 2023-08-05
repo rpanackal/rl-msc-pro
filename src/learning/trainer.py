@@ -50,7 +50,6 @@ class Trainer:
                 self.config.device
             )
             predictions = self.model(X_batch)
-
             # compute loss and backpropage the gradients
             loss = self.criterion(predictions, y_batch)
             loss.backward()
@@ -65,8 +64,8 @@ class Trainer:
                 loss, current = loss.item(), (batch_id + 1) * batch_size
                 print(
                     f"Training - Epoch: {self.epoch} | "
-                    + f"Loss at iteration {batch_id}: {loss:f} | "
-                    + f"Progress: [{current:d}/{datset_size:d}]"
+                    + f"Loss at iteration {batch_id}: {loss} | "
+                    + f"Progress: [{current}/{datset_size}]"
                 )
 
         return epoch_loss / n_batches
@@ -107,8 +106,8 @@ class Trainer:
                     loss, current = loss.item(), (batch_id + 1) * batch_size
                     print(
                         f"Validation - Epoch: {self.epoch} | "
-                        + f"Loss at iteration {batch_id}: {loss:f} | " 
-                        + f"Progress: [{current:d}/{datset_size:d}]"
+                        + f"Loss at iteration {batch_id}: {loss} | " 
+                        + f"Progress: [{current}/{datset_size}]"
                     )
 
         return epoch_loss / n_batches
@@ -137,9 +136,9 @@ class Trainer:
         print(
             Fore.GREEN
             + f"\nEpoch: {self.epoch} complete | "
-            + f"Training Loss: {train_loss:f} | "
-            + f"Validation Loss: {valid_loss:f} | "
-            + f"Incumbent Loss: {self.incumbent_loss:f}\n"
+            + f"Training Loss: {train_loss} | "
+            + f"Validation Loss: {valid_loss} | "
+            + f"Incumbent Loss: {self.incumbent_loss}\n"
         )
 
         return EpochResult(**{

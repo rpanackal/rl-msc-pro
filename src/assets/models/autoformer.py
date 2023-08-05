@@ -25,7 +25,7 @@ class FeedForward(nn.Module):
         super().__init__(*args, **kwargs)
 
         self.fc1 = nn.Linear(embed_dim, hidden_dim)
-        self.relu = nn.ReLU()
+        self.relu = nn.GELU()
         self.fc2 = nn.Linear(hidden_dim, embed_dim)
         self.dropout = nn.Dropout(dropout)
 
@@ -178,6 +178,7 @@ class DecoderBlock(nn.Module):
         x, trend2 = self.series_decomp(x + self.dropout(attn_context))
 
         x, trend3 = self.series_decomp(x + self.dropout(self.ff(x)))
+        #? Should layer norm be postponed?
         x = self.layer_norm(x)
 
         block_trend = (trend1 + trend2 + trend3).permute(0, 2, 1)
@@ -373,6 +374,7 @@ class Autoformer(nn.Module):
 
         self.enc_embedding = ContinuousEmbedding(feat_dim=feat_dim, embed_dim=embed_dim)
         self.dec_embedding = ContinuousEmbedding(feat_dim=feat_dim, embed_dim=embed_dim)
+        # ? Token embeddings instead?
         self.positional_encoding = PositionalEncoding(
             embed_dim=embed_dim, max_seq_length=(src_seq_length + tgt_seq_length)
         )
@@ -425,7 +427,7 @@ class Autoformer(nn.Module):
 
         # decoder section
         seasonal_part, trend_part = self.decoder(
-            x_seasonal=self.dec_embedding(seasonal_init),
+            x_seasonal=self.positional_encoding(self.dec_embedding(seasonal_init)),
             x_trend=trend_init,
             enc_output=enc_output,
             cross_mask=cross_mask,
@@ -445,16 +447,17 @@ class Autoformer(nn.Module):
         """
         batch_size = x_enc.size(0)
 
-        x_enc_season, x_enc_trend = self.series_decomp(x_enc)
+        
 
         mean = torch.mean(x_enc, dim=1, keepdim=True).repeat(1, self.tgt_seq_length, 1)
         zeros = torch.zeros(
             [batch_size, self.tgt_seq_length, self.feat_dim], device=x_enc.device
         )
+        seasonal_init, trend_init = self.series_decomp(x_enc)
 
         seasonal_init = torch.cat(
-            [x_enc_season[:, -self.prefix_length :, :], zeros], dim=1
+            [seasonal_init[:, -self.prefix_length :, :], zeros], dim=1
         )
-        trend_init = torch.cat([x_enc_trend[:, -self.prefix_length :, :], mean], dim=1)
+        trend_init = torch.cat([trend_init[:, -self.prefix_length :, :], mean], dim=1)
 
         return seasonal_init, trend_init

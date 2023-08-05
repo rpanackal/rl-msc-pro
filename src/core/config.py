@@ -22,6 +22,7 @@ class DatasetConfig(BaseSettings):
     validation_ratio: float = 0.3
     source_ratio: float = 0.5
     crop_length: int = 100
+    split_length: int = 100
 
 class D4RLDatasetConfig(DatasetConfig):
     id: str = ""
@@ -36,7 +37,7 @@ class OptimizerConfig(BaseSettings):
 class ExperimentConfig(BaseSettings):
     name: str = ""
     random_seed: int = 42
-    n_epochs: int = 10
+    n_epochs: int = 20
     device: torch.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
     dataset: DatasetConfig = DatasetConfig()

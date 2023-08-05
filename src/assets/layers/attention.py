@@ -18,11 +18,11 @@ class MultiHeadAttention(nn.Module):
 
         # ? Should the in out embedding dim be head_dim?
         # ? Is three different projection used always?
-        self.W_q = nn.Linear(self.embed_dim, self.embed_dim, bias=False)
-        self.W_k = nn.Linear(self.embed_dim, self.embed_dim, bias=False)
-        self.W_v = nn.Linear(self.embed_dim, self.embed_dim, bias=False)
+        self.W_q = nn.Linear(self.embed_dim, self.embed_dim, bias=True)
+        self.W_k = nn.Linear(self.embed_dim, self.embed_dim, bias=True)
+        self.W_v = nn.Linear(self.embed_dim, self.embed_dim, bias=True)
 
-        self.W_o = nn.Linear(self.n_heads * self.head_dim, self.embed_dim)
+        self.W_o = nn.Linear(self.n_heads * self.head_dim, self.embed_dim, bias=True)
 
     def forward(self, queries, keys, values, attn_mask=None):
         """Apply multi-head attention mechanism and generate the output.
@@ -163,11 +163,11 @@ class AutoCorrelation(nn.Module):
         self.head_dim = self.embed_dim // self.n_heads
 
         # ? Should bias be an function parameter ?
-        self.W_q = nn.Linear(self.embed_dim, self.embed_dim, bias=False)
-        self.W_k = nn.Linear(self.embed_dim, self.embed_dim, bias=False)
-        self.W_v = nn.Linear(self.embed_dim, self.embed_dim, bias=False)
+        self.W_q = nn.Linear(self.embed_dim, self.embed_dim, bias=True)
+        self.W_k = nn.Linear(self.embed_dim, self.embed_dim, bias=True)
+        self.W_v = nn.Linear(self.embed_dim, self.embed_dim, bias=True)
 
-        self.W_o = nn.Linear(self.embed_dim, self.embed_dim, bias=False)
+        self.W_o = nn.Linear(self.embed_dim, self.embed_dim, bias=True)
 
     def forward(self, queries, keys, values, attn_mask=None):
         """_summary_
@@ -229,7 +229,7 @@ class AutoCorrelation(nn.Module):
 
         if self.training:
             auto_corr_batch_mean = torch.mean(auto_corr_mean, dim=0)
-            _, topk_delays = torch.topk(auto_corr_batch_mean, k)  # _, (k)
+            _, topk_delays = torch.topk(auto_corr_batch_mean, k, dim=-1)  # _, (k)
             # Retrieve top k auto corr values in auto_corr_mean (batch_size, seq_length) using
             # index derived from top k auto corr values in auto_corr_batch_mean (seq_length)
             topk_auto_corr = auto_corr_mean[:, topk_delays]  # (batch_size, k)
@@ -286,7 +286,8 @@ class AutoCorrelation(nn.Module):
 
             weighted_values_agg += topk_auto_corr_at_delay * values_at_delay
 
-        return weighted_values_agg.contiguous()
+        #? Should contiguous be called on weighted_values_agg?
+        return weighted_values_agg
 
     def auto_correlation(
         self, queries: torch.FloatTensor, keys: torch.FloatTensor, dim=1
