@@ -50,10 +50,20 @@ class LayerNorm(nn.Module):
         self.layernorm = nn.LayerNorm(embed_dim)
 
     def forward(self, x):
+        """_summary_
+
+        Args:
+            x (_type_): _description_
+                shape: (batch_size, seq_length, embed_dim)
+
+        Returns:
+            _type_: _description_
+                shape: (batch_size, seq_length, embed_dim)
+        """
         x_hat = self.layernorm(x)
         seq_length = x.size(1)
 
-        bias = torch.mean(x_hat, dim=1).unsqueeze(1).repeat(1, seq_length, 1)
+        bias = torch.mean(x_hat, dim=1, keepdim=True).repeat(1, seq_length, 1)
         return x_hat - bias
 
 
@@ -250,14 +260,15 @@ class Encoder(nn.Module):
 class Decoder(nn.Module):
     def __init__(
         self,
-        embed_dim,
-        feat_dim,
-        expanse_dim,
-        kernel_size,
-        corr_factor,
-        n_blocks,
-        n_heads,
-        dropout,
+        embed_dim: int,
+        src_feat_dim: int,
+        tgt_feat_dim: int,
+        expanse_dim: int,
+        kernel_size: int,
+        corr_factor: float,
+        n_blocks: int,
+        n_heads: int,
+        dropout: float,
         *args,
         **kwargs
     ) -> None:
@@ -283,7 +294,7 @@ class Decoder(nn.Module):
             [
                 DecoderBlock(
                     embed_dim=embed_dim,
-                    feat_dim=feat_dim,
+                    feat_dim=tgt_feat_dim,
                     expanse_dim=expanse_dim,
                     kernel_size=kernel_size,
                     corr_factor=corr_factor,
@@ -293,7 +304,16 @@ class Decoder(nn.Module):
                 for _ in range(n_blocks)
             ]
         )
-        self.seasonal_projection = nn.Linear(embed_dim, feat_dim, bias=True)
+        self.seasonal_projection = nn.Linear(embed_dim, tgt_feat_dim, bias=True)
+        self.res_trend_projection = nn.Conv1d(
+            in_channels=src_feat_dim,
+            out_channels=tgt_feat_dim,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+            padding_mode="circular",
+            bias=False,
+        )
 
     def forward(self, x_seasonal, x_trend, enc_output, cross_mask=None, tgt_mask=None):
         """_summary_
@@ -311,7 +331,7 @@ class Decoder(nn.Module):
         Returns:
             _type_: _description_
         """
-        trend_residual = x_trend
+        trend_residual = self.res_trend_projection(x_trend.permute(0, 2, 1)).permute(0, 2, 1)
 
         for dec_block in self.decoder_blocks:
             x_seasonal, trend = dec_block(x_seasonal, enc_output, cross_mask, tgt_mask)
@@ -325,7 +345,8 @@ class Decoder(nn.Module):
 class Autoformer(nn.Module):
     def __init__(
         self,
-        feat_dim: int,
+        src_feat_dim: int,
+        tgt_feat_dim: int,
         embed_dim: int,
         expanse_dim: int,
         kernel_size: int,
@@ -343,8 +364,8 @@ class Autoformer(nn.Module):
         """_summary_
 
         Args:
-            feat_dim (int): Feature dimension of input and target
-                sequence elements
+            src_feat_dim (int): Feature dimension target sequence elements
+            tgt_feat_dim (int): Feature dimension of target sequence elements
             embed_dim (int): Dimensionality of embedding space of sequence elements.
             expanse_dim (int): Dimensionality of space to which embeddings are projected to,
                 then back from within feed forward layer.
@@ -363,7 +384,7 @@ class Autoformer(nn.Module):
             dropout (float): _description_
         """
         super().__init__(*args, **kwargs)
-        self.feat_dim = feat_dim
+        self.src_feat_dim = src_feat_dim
 
         self.tgt_seq_length = tgt_seq_length
 
@@ -372,8 +393,8 @@ class Autoformer(nn.Module):
         )
         self.prefix_length = math.floor(src_seq_length * cond_prefix_frac)
 
-        self.enc_embedding = ContinuousEmbedding(feat_dim=feat_dim, embed_dim=embed_dim)
-        self.dec_embedding = ContinuousEmbedding(feat_dim=feat_dim, embed_dim=embed_dim)
+        self.enc_embedding = ContinuousEmbedding(feat_dim=src_feat_dim, embed_dim=embed_dim)
+        self.dec_embedding = ContinuousEmbedding(feat_dim=src_feat_dim, embed_dim=embed_dim)
         # ? Token embeddings instead?
         self.positional_encoding = PositionalEncoding(
             embed_dim=embed_dim, max_seq_length=(src_seq_length + tgt_seq_length)
@@ -392,7 +413,8 @@ class Autoformer(nn.Module):
 
         self.decoder = Decoder(
             embed_dim=embed_dim,
-            feat_dim=feat_dim,
+            src_feat_dim=src_feat_dim,
+            tgt_feat_dim=tgt_feat_dim,
             expanse_dim=expanse_dim,
             kernel_size=kernel_size,
             corr_factor=corr_factor,
@@ -451,7 +473,7 @@ class Autoformer(nn.Module):
 
         mean = torch.mean(x_enc, dim=1, keepdim=True).repeat(1, self.tgt_seq_length, 1)
         zeros = torch.zeros(
-            [batch_size, self.tgt_seq_length, self.feat_dim], device=x_enc.device
+            [batch_size, self.tgt_seq_length, self.src_feat_dim], device=x_enc.device
         )
         seasonal_init, trend_init = self.series_decomp(x_enc)
 

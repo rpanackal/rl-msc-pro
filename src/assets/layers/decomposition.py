@@ -59,6 +59,10 @@ class SeriesDecomposition(nn.Module):
 
         Args:
             x (_type_): _description_
+                shape: (batch_size, seq_length, embed_dim)
+        
+        Returns:
+            torch.FloatTensor: padded sequence
         """
         num_of_pads = (self.kernel_size - 1) // 2
         front = x[:, 0:1, :].repeat(1, num_of_pads, 1)

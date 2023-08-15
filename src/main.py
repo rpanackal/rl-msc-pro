@@ -1,89 +1,79 @@
-# import gymnasium as gym
-import d4rl  # Import required to register environments, you may need to also import the submodule
+import random
+import time
+from datetime import datetime
+
+import gym
+import numpy as np
 import torch
-import torch.nn as nn
-import torchvision.transforms as transforms
-from d4rl import gym_mujoco
-from pydantic_settings import BaseSettings
-from torch.utils.data import DataLoader, random_split
 
-from .assets import Autoformer
-from .core.config import AutoformerConfig, D4RLDatasetConfig, ExperimentConfig
-from .data.dataset import D4RLSequenceDataset
-from .learning.trainer import Trainer
-from .transforms import RandomCropSequence
+from .agents import SACAgent
+from .core.config import RLExperimentConfig, SACAgentConfig
 
 
-def d4rl_halfcheetah_pipeline():
-    config = ExperimentConfig()
-    config.model = AutoformerConfig()
-    config.dataset = D4RLDatasetConfig(id="halfcheetah-medium-v2")
+def make_env(env_id, seed, idx, capture_video, run_name):
+    def thunk():
+        env = gym.make(env_id)
+        env = gym.wrappers.RecordEpisodeStatistics(env)
+        if capture_video and idx == 0:
+            env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
+        if hasattr(env, "seed"):
+            env.seed(seed)
+        env.action_space.seed(seed)
+        env.observation_space.seed(seed)
+        return env
 
-    # transform = transforms.Compose([RandomCropSequence(config.dataset.crop_length)])
-    transform = None
-    dataset = D4RLSequenceDataset(
-        config.dataset.id,
-        source_ratio=config.dataset.source_ratio,
-        transform=transform,
-        split_length=config.dataset.split_length,
-    )
-
-    train_dataset, valid_datset = random_split(
-        dataset, [1 - config.dataset.validation_ratio, config.dataset.validation_ratio]
-    )
-
-    source, target = train_dataset[0]
-    src_seq_length, feat_dim = source.size()
-    tgt_seq_length = target.size(0)
-
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=config.dataloader.batch_size,
-        shuffle=config.dataloader.shuffle,
-    )
-    valid_loader = DataLoader(
-        valid_datset,
-        batch_size=config.dataloader.batch_size,
-        shuffle=config.dataloader.shuffle,
-    )
-
-    model = Autoformer(
-        feat_dim=feat_dim,
-        embed_dim=config.model.embed_dim,
-        expanse_dim=config.model.expanse_dim,
-        kernel_size=config.model.kernel_size,
-        corr_factor=config.model.corr_factor,
-        n_enc_blocks=config.model.n_enc_blocks,
-        n_dec_blocks=config.model.n_dec_blocks,
-        n_heads=config.model.n_heads,
-        src_seq_length=src_seq_length,
-        tgt_seq_length=tgt_seq_length,
-        cond_prefix_frac=config.model.cond_prefix_frac,
-        dropout=config.model.dropout,
-    ).to(config.device)
-
-    criterion = nn.MSELoss()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=config.optimizer.lr)
-
-    trainer = Trainer(
-        train_loader=train_loader,
-        valid_loader=valid_loader,
-        model=model,
-        criterion=criterion,
-        optimizer=optimizer,
-        config=config,
-    )
-
-    # Training
-    for _ in range(config.n_epochs):
-        result = trainer.step()
-        if result.incumbent_found:
-            trainer.save_checkpoint(result)
+    return thunk
 
 
-def main():
-    d4rl_halfcheetah_pipeline()
+def set_torch_seed(seed, torch_deterministic=True):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.backends.cudnn.deterministic = torch_deterministic
 
 
 if __name__ == "__main__":
-    main()
+    config = RLExperimentConfig()
+    config.agent = SACAgentConfig()
+
+    current_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    config.name = f"{config.env_id}_{config.agent.name}_{current_datetime}"
+
+    set_torch_seed(config.random_seed)
+
+    envs = gym.vector.SyncVectorEnv(
+        [
+            make_env(
+                config.env_id, config.random_seed, 0, config.capture_video, config.name
+            )
+        ]
+    )
+
+    print("Number of environments: ", envs.num_envs)
+    print("Observation Space: ", envs.single_observation_space)
+    print("Action Space: ", envs.single_action_space)
+
+    agent = SACAgent(
+        envs=envs,
+        critic_learning_rate=config.critic_optimizer.lr,
+        actor_learning_rate=config.actor_optimizer.lr,
+        buffer_size=config.replay_buffer.buffer_size,
+        device=config.device,
+    )
+
+    start_time = time.time()
+
+    config.total_timesteps = 10000
+    agent.train(
+        total_timesteps=config.total_timesteps,
+        batch_size=config.replay_buffer.batch_size,
+        learning_starts=config.learning_starts,
+        alpha=config.agent.alpha,
+        autotune=config.agent.autotune,
+        gamma=config.agent.gamma,
+        policy_frequency=config.agent.policy_frequency,
+        target_network_frequency=config.agent.target_network_frequency,
+        tau=config.agent.tau,
+    )
+
+    envs.close()

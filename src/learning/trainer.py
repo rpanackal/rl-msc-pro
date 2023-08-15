@@ -9,13 +9,14 @@ init(autoreset=True)
 
 class Trainer:
     def __init__(
-        self, train_loader, valid_loader, model, criterion, optimizer, config
+        self, train_loader, valid_loader, model, criterion, optimizer, config, lr_scheduler=None
     ) -> None:
         self.train_loader = train_loader
         self.valid_loader = valid_loader
         self.model = model
         self.criterion = criterion
         self.optimizer = optimizer
+        self.lr_scheduler = lr_scheduler
         self.config = config
 
         self.incumbent_loss = float("inf")
@@ -56,6 +57,9 @@ class Trainer:
 
             # update the weights
             self.optimizer.step()
+
+            if self.lr_scheduler:
+                self.lr_scheduler.step()
 
             # loss
             epoch_loss += loss.item()

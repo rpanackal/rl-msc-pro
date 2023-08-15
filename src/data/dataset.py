@@ -43,7 +43,8 @@ class D4RLSequenceDataset(Dataset):
         )
 
         self.env = gym.make(id)
-
+        self.obs_dim = self.env.observation_space.shape[0]
+        
         self.split_length = split_length
         self.source_ratio = source_ratio
         self.transform = transform
@@ -73,7 +74,7 @@ class D4RLSequenceDataset(Dataset):
 
         source, target = (
             episode[:partition],
-            episode[partition:],
+            torch.cat([episode[partition:, :self.obs_dim], episode[partition:,-1].unsqueeze(1)], dim=1),
         )
 
         if self.source_transform:
