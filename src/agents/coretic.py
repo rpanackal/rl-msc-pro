@@ -1,17 +1,22 @@
 import gym
+import numpy as np
 import torch
 import torch.nn.functional as F
-from torch import optim
-from stable_baselines3.common.buffers import ReplayBuffer, ReplayBufferSamples
-from .core import GenericAgent
+from torch import nn, optim
+from torchrl.data import ReplayBuffer, ListStorage
 from ..assets.models import Actor, SoftQNetwork
+from .core import GenericAgent
 
-import numpy as np
 
-class SACAgent(GenericAgent):
+class CoreticAgent(GenericAgent):
+    """Contextual Representation Learning via Time Series Transformers for Control"
+
+    """
     def __init__(
         self,
         envs: gym.vector.SyncVectorEnv,
+        repr_model: nn.Module,
+        repr_model_learning_rate: float,
         critic_learning_rate: float,
         actor_learning_rate: float,
         buffer_size: int,
@@ -22,6 +27,8 @@ class SACAgent(GenericAgent):
             envs.single_action_space, gym.spaces.Box
         ), "only continuous action space is supported"
 
+
+
         self.actor = Actor(envs).to(device)
         self.qf1 = SoftQNetwork(envs).to(device)
         self.qf2 = SoftQNetwork(envs).to(device)
@@ -29,6 +36,7 @@ class SACAgent(GenericAgent):
         self.qf2_target = SoftQNetwork(envs).to(device)
         self.qf1_target.load_state_dict(self.qf1.state_dict())
         self.qf2_target.load_state_dict(self.qf2.state_dict())
+
         self.q_optimizer = optim.Adam(
             list(self.qf1.parameters()) + list(self.qf2.parameters()),
             lr=critic_learning_rate,
@@ -38,17 +46,19 @@ class SACAgent(GenericAgent):
         )
 
         envs.single_observation_space.dtype = np.float32
-        self.replay_buffer = ReplayBuffer(
-            buffer_size,
-            envs.single_observation_space,
-            envs.single_action_space,
-            device,
-            handle_timeout_termination=True,
-        )
+        self.replay_buffer = ReplayBuffer(storage=ListStorage(buffer_size))
+        # self.replay_buffer = ReplayBuffer(
+        #     buffer_size,
+        #     envs.single_observation_space,
+        #     envs.single_action_space,
+        #     device,
+        #     handle_timeout_termination=True,
+        # )
 
         self.device = device
         self.critic_learning_rate = critic_learning_rate
         self.envs = envs
+        # TODO: tensorboard logging
         # self.writer = writer
 
         super().__init__(envs)
@@ -117,6 +127,8 @@ class SACAgent(GenericAgent):
         obs, next_obs, actions, rewards, dones, infos = experience
 
         # TRY NOT TO MODIFY: save data to reply buffer; handle `terminal_observation`
+        # When using vectorized environment, the environments are automatically reset
+        # at the end of an episode and real terminal observation is in infos.
         real_next_obs = next_obs.copy()
         for idx, d in enumerate(dones):
             if d:
@@ -241,7 +253,6 @@ class SACAgent(GenericAgent):
         obs = self.envs.reset()
         for _ in range(total_timesteps):
             # ALGO LOGIC: put action logic here
-            # print("Training step: ", self.global_step)
             actions, _, _ = self.sample_action(obs, to_numpy=True)
 
             # print(f"Actions in train, shape: {actions.shape}, type: {type(actions)}")
@@ -255,7 +266,32 @@ class SACAgent(GenericAgent):
 
             obs = next_obs
             self.global_step += 1
+    
+    def gather_experience(self, total_timesteps):
+        obs = self.envs.reset()
+        episode_rewards = []
+        
+        for _ in range(total_timesteps):
+            actions, _, _ = self.sample_action(obs, to_numpy=True)
+            next_obs, rewards, dones, infos = self.envs.step(actions)
 
+            # Store the experience in the RolloutBuffer
+            self.rollout_buffer.add(obs, actions, rewards, dones, next_obs)
+
+            obs = next_obs
+            episode_rewards.append(rewards)
+
+            # If done, preprocess and update agent
+            if all(dones):
+                experience = self.rollout_buffer.get()
+                experience = self.preprocess_experience(experience)
+                self.update_agent(experience)
+                self.rollout_buffer.reset()
+
+                obs = self.envs.reset()  # Reset environments for the new episode
+                episode_rewards = []
+
+            self.global_step += 1
 
 if __name__ == "__main__":
     # Hyperparameters

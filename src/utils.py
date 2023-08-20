@@ -1,8 +1,9 @@
 import collections
 import numpy as np
+import random
+import torch
 
-
-def inspect_head_env(env, n_steps=1):
+def inspect_head_d4rl_env(env, n_steps=1):
     """Inspect head of D4RL registered environments
 
     Args:
@@ -20,7 +21,7 @@ def inspect_head_env(env, n_steps=1):
         print(f"{i+1} State: env.step - ", obs)
 
 
-def inspect_head_dataset(dataset, n_steps=1):
+def inspect_head_d4rl_dataset(dataset, n_steps=1):
     """Inspect head of D4RL offline dataset
 
     Args:
@@ -46,7 +47,7 @@ def inspect_head_dataset(dataset, n_steps=1):
         print(f"{i + 1} State: dataset['next_observations'][i]- ", dataset['next_observations'][i])
         print(f"{i + 1} State: dataset['observations'][i+1] - ", dataset['observations'][i+1])
 
-def sequence_dataset(env, dataset=None, **kwargs):
+def sequence_d4rl_dataset(env, dataset=None, **kwargs):
     """
     Returns an iterator through trajectories of D4RL 
     directed dataset.
@@ -94,7 +95,7 @@ def sequence_dataset(env, dataset=None, **kwargs):
         episode_step += 1
 
 
-def get_sequence_dataset(self, env, split_length=None):
+def sequence_d4rl_dataset_numpy(self, env, split_length=None):
     """Collect all trajectories in a directed D4RL dataset into
     a numpy array.
 
@@ -115,7 +116,7 @@ def get_sequence_dataset(self, env, split_length=None):
     prev_episode_length = None
     dataset = []
 
-    for episode in sequence_dataset(env):
+    for episode in sequence_d4rl_dataset(env):
         episode_length = len(episode["rewards"])
 
         # When split_length is None, episode lengths are preserved
@@ -143,3 +144,9 @@ def get_sequence_dataset(self, env, split_length=None):
             prev_episode_length = episode_length
 
     return np.concatenate(dataset, axis=0)
+
+def set_torch_seed(seed, torch_deterministic=True):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.backends.cudnn.deterministic = torch_deterministic

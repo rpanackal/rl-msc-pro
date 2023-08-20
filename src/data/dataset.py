@@ -2,12 +2,12 @@
 # from torchvision.transforms import ToTensor
 import math
 
-import gym
+from d4rl.offline_env import OfflineEnv
 import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from ..utils import sequence_dataset
+from ..utils import sequence_d4rl_dataset
 
 
 class D4RLSequenceDataset(Dataset):
@@ -15,7 +15,7 @@ class D4RLSequenceDataset(Dataset):
 
     def __init__(
         self,
-        id: str,
+        env: OfflineEnv,
         source_ratio: float = 0.7,
         transform=None,
         source_transform=None,
@@ -42,7 +42,7 @@ class D4RLSequenceDataset(Dataset):
             "The source_ratio is not in range (0,1)"
         )
 
-        self.env = gym.make(id)
+        self.env = env
         self.obs_dim = self.env.observation_space.shape[0]
         
         self.split_length = split_length
@@ -89,7 +89,7 @@ class D4RLSequenceDataset(Dataset):
         prev_episode_length = None
         is_variable_length = False
 
-        for episode in sequence_dataset(self.env):
+        for episode in sequence_d4rl_dataset(self.env):
             episode_length = len(episode["rewards"])
 
             if prev_episode_length and prev_episode_length != episode_length:
@@ -128,7 +128,6 @@ class D4RLSequenceDataset(Dataset):
     def __getattr__(self, name):
         # Delegate attribute access to the true object
         return getattr(self._dataset, name)
-
 
 if __name__ == "__main__":
     dataset = D4RLSequenceDataset("halfcheetah-medium-v2")

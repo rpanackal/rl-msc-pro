@@ -1,4 +1,3 @@
-import random
 import time
 from datetime import datetime
 
@@ -8,28 +7,8 @@ import torch
 
 from .agents import SACAgent
 from .core.config import RLExperimentConfig, SACAgentConfig
-
-
-def make_env(env_id, seed, idx, capture_video, run_name):
-    def thunk():
-        env = gym.make(env_id)
-        env = gym.wrappers.RecordEpisodeStatistics(env)
-        if capture_video and idx == 0:
-            env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
-        if hasattr(env, "seed"):
-            env.seed(seed)
-        env.action_space.seed(seed)
-        env.observation_space.seed(seed)
-        return env
-
-    return thunk
-
-
-def set_torch_seed(seed, torch_deterministic=True):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.backends.cudnn.deterministic = torch_deterministic
+from .envs.utils import make_env
+from .utils import set_torch_seed
 
 
 if __name__ == "__main__":
@@ -41,6 +20,7 @@ if __name__ == "__main__":
 
     set_torch_seed(config.random_seed)
 
+    # Here only 1 environment as list contains only one function
     envs = gym.vector.SyncVectorEnv(
         [
             make_env(
