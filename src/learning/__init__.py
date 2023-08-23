@@ -1,2 +1,2 @@
-from .learner import Learner
-from .evaluator import Evaluator
+from .learner import SupervisedLearner
+from .evaluator import SupervisedEvaluator

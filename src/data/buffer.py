@@ -1,4 +1,4 @@
-from typing import Union, NamedTuple, Optional
+from typing import Union, NamedTuple, Any
 
 import numpy as np
 import torch as th
@@ -9,10 +9,11 @@ from stable_baselines3.common.vec_env import VecNormalize
 
 
 class EpisodicBufferSamples(NamedTuple):
-    observations: th.Tensor | list
-    actions: th.Tensor | list
-    rewards: th.Tensor | list
-    dones: th.Tensor | list
+    observations: th.Tensor | list[np.ndarray]
+    next_observations: th.Tensor | list[np.ndarray] | None
+    actions: th.Tensor | list[np.ndarray]
+    rewards: th.Tensor | list[np.ndarray]
+    dones: th.Tensor | list[np.ndarray]
 
 
 class EpisodicBuffer(BaseBuffer):
@@ -38,18 +39,17 @@ class EpisodicBuffer(BaseBuffer):
         action_space: spaces.Space,
         device: Union[th.device, str] = "cpu",
         n_envs: int = 1,
+        optimize_memory_usage: bool = False,
     ):
         super(EpisodicBuffer, self).__init__(
             buffer_size, observation_space, action_space, device, n_envs=n_envs
         )
 
         self.observations, self.actions, self.rewards = None, None, None
-        self.dones = None
-        self.generator_ready = False
-        self.reset()
+        self.next_observations, self.dones = None, None
 
-        # TODO: Add dones and infos
-        # TODO: Use dones instead of episode_starts
+        self.optimize_memory_usage = optimize_memory_usage
+        self.reset()
 
     def reset(self) -> None:
         self.observations = np.zeros(
@@ -60,24 +60,28 @@ class EpisodicBuffer(BaseBuffer):
         )
         self.rewards = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.dones = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+
+        if not self.optimize_memory_usage:
+            self.next_observations = np.zeros(
+                (self.buffer_size, self.n_envs) + self.obs_shape, dtype=np.float32
+            )
         super(EpisodicBuffer, self).reset()
 
     def add(
         self,
         obs: np.ndarray,
+        next_obs: np.ndarray,
         action: np.ndarray,
         reward: np.ndarray,
         done: np.ndarray,
+        infos: list[dict[str, Any]] = None,
     ) -> None:
         """
         :param obs: Observation
         :param action: Action
         :param reward:
-        :param episode_start: Start of episode signal.
-        :param value: estimated value of the current state
-            following the current policy.
-        :param log_prob: log probability of the action
-            following the current policy.
+        :param done:
+        :param infos: (Currently unused)
         """
 
         # Reshape needed when using multiple envs with discrete observations
@@ -91,6 +95,10 @@ class EpisodicBuffer(BaseBuffer):
             self.actions[:-1] = self.actions[1:]
             self.rewards[:-1] = self.rewards[1:]
             self.dones[:-1] = self.dones[1:]
+
+            if not self.optimize_memory_usage:
+                self.next_observations[:-1] = self.next_observations[1:]
+
             # The last index is now free for the new data
             self.pos = self.buffer_size - 1
 
@@ -99,6 +107,9 @@ class EpisodicBuffer(BaseBuffer):
         self.actions[self.pos] = np.array(action).copy()
         self.rewards[self.pos] = np.array(reward).copy()
         self.dones[self.pos] = np.array(done).copy()
+
+        if not self.optimize_memory_usage:
+            self.next_observations[self.pos] = np.array(next_obs).copy()
 
         self.pos += 1
         if not self.full and self.pos == self.buffer_size:
@@ -117,13 +128,13 @@ class EpisodicBuffer(BaseBuffer):
             dones_indices = np.hstack((np.array([-1]), dones_indices))
         if dones_indices[-1] != self.pos - 1:
             dones_indices = np.hstack((dones_indices, np.array([self.pos - 1])))
-        
+
         # start_indices are inclusive, while end_indices are exclusive
         start_indices = dones_indices[0:-1] + 1
         end_indices = dones_indices[1:] + 1
 
         del dones_indices
-        
+
         # Step 2: Filter episodes based on desired length.
         if desired_length:
             episode_lengths = end_indices - start_indices
@@ -135,9 +146,7 @@ class EpisodicBuffer(BaseBuffer):
         else:
             valid_indices_idx = list(range(len(start_indices)))
             if len(valid_indices_idx) < batch_size:
-                raise ValueError(
-                    "Not enough episodes of batch size in the buffer!"
-                )
+                raise ValueError("Not enough episodes of batch size in the buffer!")
 
         # Step 3: Randomize sample episodes.
         valid_indices_idx = np.random.permutation(valid_indices_idx)
@@ -145,28 +154,12 @@ class EpisodicBuffer(BaseBuffer):
         sampled_ends = end_indices[valid_indices_idx]
 
         # Step 4: Sample sequences from the buffer.
-        (
-            sampled_obs,
-            sampled_actions,
-            sampled_rewards,
-            sampled_dones,
-        ) = self._get_samples(starts=sampled_starts,
-                              ends=sampled_ends, 
-                              batch_size=batch_size, 
-                              desired_length=desired_length, 
-                              env=env)
-
-        # Note: At this point, all sequences are of length `desired_length` if given,
-        # then convert them to numpy arrays (since they all have the same length now).
-        # Otherwise list of variable length episodes are given.
-        if desired_length:
-            sampled_obs = self.to_torch(np.array(sampled_obs))
-            sampled_actions = self.to_torch(np.array(sampled_actions))
-            sampled_rewards = self.to_torch(np.array(sampled_rewards))
-            sampled_dones = self.to_torch(np.array(sampled_dones))
-
-        return EpisodicBufferSamples(
-            sampled_obs, sampled_actions, sampled_rewards, sampled_dones
+        return self._get_samples(
+            starts=sampled_starts,
+            ends=sampled_ends,
+            batch_size=batch_size,
+            desired_length=desired_length,
+            env=env,
         )
 
     def _get_samples(
@@ -193,31 +186,56 @@ class EpisodicBuffer(BaseBuffer):
 
         # Allow start sampling anywhere in the episode to get desired_length trajectory if given.
         sampled_obs, sampled_actions, sampled_rewards, sampled_dones = [], [], [], []
-        
+    
+        if not self.optimize_memory_usage:
+            next_observations = self.swap_and_flatten(self.next_observations)
+            sampled_next_obs = []
+
         # Initialize a counter for starts and ends
         counter = 0
-        
+
         # Loop until you have enough samples
         while counter < batch_size:
             # Use modulo indexing to loop through starts and ends
             start = starts[counter % len(starts)]
             end = ends[counter % len(ends)]
-            
+
             effective_start = (
                 np.random.randint(start, end - desired_length + 1)
                 if desired_length
                 else start
             )
-            
+
             # TODO: Add any normalization applied in environment if necessary
             effective_end = effective_start + desired_length if desired_length else end
-            
+
             sampled_obs.append(observations[effective_start:effective_end].copy())
             sampled_actions.append(actions[effective_start:effective_end].copy())
             sampled_rewards.append(rewards[effective_start:effective_end].copy())
             sampled_dones.append(dones[effective_start:effective_end].copy())
+
+            if not self.optimize_memory_usage:
+                sampled_next_obs.append(next_observations[effective_start:effective_end].copy())
             
             # Increment the counter
             counter += 1
 
-        return sampled_obs, sampled_actions, sampled_rewards, sampled_dones
+        # Note: At this point, all sequences are of length `desired_length` if given,
+        # then convert them to numpy arrays (since they all have the same length now).
+        # Otherwise list of variable length episodes are given.
+        if desired_length:
+            sampled_obs = self.to_torch(np.array(sampled_obs))
+            sampled_actions = self.to_torch(np.array(sampled_actions))
+            sampled_rewards = self.to_torch(np.array(sampled_rewards))
+            sampled_dones = self.to_torch(np.array(sampled_dones))
+
+            if not self.optimize_memory_usage:
+                sampled_next_obs = self.to_torch(np.array(sampled_next_obs))
+
+        return EpisodicBufferSamples(
+            observations=sampled_obs, 
+            next_observations=sampled_next_obs if not self.optimize_memory_usage else None, 
+            actions=sampled_actions, 
+            rewards=sampled_rewards, 
+            dones=sampled_dones
+        )

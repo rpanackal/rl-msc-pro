@@ -8,14 +8,13 @@ LOG_STD_MAX = 2
 
 
 class Actor(nn.Module):
-    def __init__(self, env):
+    def __init__(self, env, observation_dim):
         """Initialize the Actor model.
 
         Args:
             env: Gym environment. Used to get the observation and action dimensions.
         """
         super().__init__()
-        observation_dim = np.prod(env.single_observation_space.shape)
         action_dim = np.prod(env.single_action_space.shape)
 
         self.fc1 = nn.Linear(observation_dim, 256)

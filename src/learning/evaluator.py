@@ -10,7 +10,7 @@ from pathlib import PurePath
 
 init(autoreset=True)
 
-class Evaluator():
+class SupervisedEvaluator():
     """A class that handles testing of a learnt model.
     """
     def __init__(

@@ -8,23 +8,33 @@ from torch.utils.data import DataLoader, random_split
 from datetime import datetime
 import gym
 
-from .assets import Autoformer
-from .core.config import AutoformerConfig, D4RLDatasetConfig, ExperimentConfig
-from .data.dataset import D4RLSequenceDataset
-from .learning import Learner, Evaluator
-from .transforms import RandomCropSequence
+from ..assets import Autoformer
+from ..config import (
+    AutoformerConfig,
+    D4RLDatasetConfig,
+    SupervisedLearnerConfig,
+    OptimizerConfig,
+    CosineAnnealingLRConfig,
+    DataLoaderConfig
+)
+from ..data.dataset import D4RLSequenceDataset
+from ..learning import SupervisedLearner, SupervisedEvaluator
+from ..transforms import RandomCropSequence
 from torch.utils.tensorboard import SummaryWriter
 
 
 def main():
-
     # Configure experiment
-    config = ExperimentConfig()
-    config.model = AutoformerConfig()
-    config.dataset = D4RLDatasetConfig(id="halfcheetah-medium-v2")
+    config = SupervisedLearnerConfig(
+        n_epochs=15,
+        model=AutoformerConfig(),
+        dataset=D4RLDatasetConfig(env_id="halfcheetah-medium-v2"),
+        dataloader=DataLoaderConfig(),
+        optimizer=OptimizerConfig(scheduler=CosineAnnealingLRConfig()),
+    )
 
     # Create Gym environment
-    env = gym.make(config.dataset.id)
+    env = gym.make(config.dataset.name)
 
     # Handle dataset and dataloaders
     # transform = transforms.Compose([RandomCropSequence(config.dataset.crop_length)])
@@ -88,17 +98,17 @@ def main():
 
     max_iter = config.n_epochs * (len(train_dataset) / config.dataloader.batch_size)
     lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, eta_min=config.optimizer.min_lr, T_max=max_iter
+        optimizer, eta_min=config.optimizer.scheduler.min_lr, T_max=max_iter
     )
 
     # Setup trial logging
     current_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    trial_name = f"{config.dataset.id}_{config.model.name}_{current_datetime}"
+    trial_name = f"{config.dataset.name}_{config.model.name}_{current_datetime}"
     log_dir = config.checkpoint_dir / trial_name
     writer = SummaryWriter(log_dir=log_dir)
 
     # Define learner
-    learner = Learner(
+    learner = SupervisedLearner(
         train_loader=train_loader,
         valid_loader=valid_loader,
         model=model,
@@ -115,7 +125,7 @@ def main():
         if result.incumbent_found:
             learner.save_checkpoint(result)
 
-    evaluator = Evaluator(
+    evaluator = SupervisedEvaluator(
         test_loader=test_loader,
         model=model,
         criterion=criterion,
@@ -126,6 +136,7 @@ def main():
 
     env.close()
     writer.close()
+
 
 if __name__ == "__main__":
     main()

@@ -5,7 +5,7 @@ import torch.nn.functional as F
 import numpy as np
 
 class SoftQNetwork(nn.Module):
-    def __init__(self, env):
+    def __init__(self, env, observation_dim):
         """Initialize the Soft Q-Network.
 
         Args:
@@ -15,7 +15,7 @@ class SoftQNetwork(nn.Module):
         self.env = env
 
         # Calculate total input size from observation and action space
-        input_dim = np.prod(env.single_observation_space.shape) + np.prod(
+        input_dim = observation_dim + np.prod(
             env.single_action_space.shape
         )
 

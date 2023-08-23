@@ -13,7 +13,7 @@ from pathlib import PurePath
 init(autoreset=True)
 
 
-class Learner:
+class SupervisedLearner:
     """A class that handles traing and validation during learning a model."""
 
     def __init__(
@@ -49,7 +49,7 @@ class Learner:
             # Create a trial dir from config information and timestamp
             else:
                 current_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-                trial_name = f"{self.config.dataset.id}_{self.config.model.name}_{current_datetime}"
+                trial_name = f"{self.config.dataset.name}_{self.config.model.name}_{current_datetime}"
                 self.trial_dir = self.config.checkpoint_dir / trial_name
 
         self.writer = writer if writer else SummaryWriter(log_dir=str(self.trial_dir))
@@ -109,13 +109,12 @@ class Learner:
         Returns:
             float: The training loss for one epoch
         """
-        assert (
-            self.train_loader is not None,
+        assert self.train_loader is not None,\
             ValueError(
                 "train_loader required to use epoch level training api of Learner \
                 class."
-            ),
-        )
+            )
+    
         # initialize every epoch
         epoch_loss = 0
         datset_size = len(self.train_loader.dataset)
@@ -186,13 +185,12 @@ class Learner:
         Returns:
             tuple: A tuple of length 2 with validation loss and accuracy for one epoch
         """
-        assert (
-            self.valid_loader is not None,
+        assert self.valid_loader is not None,\
             ValueError(
                 "valid_loader required to use epoch level valiation api of Learner \
                  class."
-            ),
-        )
+            )
+
 
         # initialize every epoch
         epoch_loss = 0

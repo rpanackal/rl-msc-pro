@@ -5,23 +5,18 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from gym.vector import VectorEnv
-from torch import nn, optim
+from stable_baselines3.common.buffers import ReplayBuffer, ReplayBufferSamples
+from torch import optim
 from torch.utils.tensorboard import SummaryWriter
 
-from ..assets import Autoformer
 from ..assets.models import Actor, SoftQNetwork
-from ..data.buffer import EpisodicBuffer, EpisodicBufferSamples
 from .core import GenericAgent
 
 
-class CoreticAgent(GenericAgent):
-    """Contextual Representation Learning via Time Series Transformers for Control" """
-
+class SACAgent(GenericAgent):
     def __init__(
         self,
         envs: gym.vector.SyncVectorEnv,
-        repr_model: Autoformer,
-        repr_model_learning_rate: float,
         critic_learning_rate: float,
         actor_learning_rate: float,
         buffer_size: int,
@@ -29,27 +24,19 @@ class CoreticAgent(GenericAgent):
         writer: SummaryWriter,
         log_freq: int = 100,
     ):
-        assert isinstance(envs.single_action_space, gym.spaces.Box), ValueError(
-            "only continuous action space is supported"
-        )
+        assert isinstance(
+            envs.single_action_space, gym.spaces.Box
+        ), "only continuous action space is supported"
 
-        self.repr_model = repr_model
-        self.src_seq_length = self.repr_model.src_seq_length
-        self.tgt_seq_length = self.repr_model.tgt_seq_length
-        self.repr_dim = self.repr_model.embed_dim
+        observation_dim = np.prod(envs.single_observation_space.shape)
 
-        self.actor = Actor(envs, self.repr_dim).to(device)
-        self.qf1 = SoftQNetwork(envs, self.repr_dim).to(device)
-        self.qf2 = SoftQNetwork(envs, self.repr_dim).to(device)
-        self.qf1_target = SoftQNetwork(envs, self.repr_dim).to(device)
-        self.qf2_target = SoftQNetwork(envs, self.repr_dim).to(device)
+        self.actor = Actor(envs, observation_dim).to(device)
+        self.qf1 = SoftQNetwork(envs, observation_dim).to(device)
+        self.qf2 = SoftQNetwork(envs, observation_dim).to(device)
+        self.qf1_target = SoftQNetwork(envs, observation_dim).to(device)
+        self.qf2_target = SoftQNetwork(envs, observation_dim).to(device)
         self.qf1_target.load_state_dict(self.qf1.state_dict())
         self.qf2_target.load_state_dict(self.qf2.state_dict())
-
-        self.repr_optimizer = optim.Adam(
-            list(self.repr_model.parameters()),
-            lr=repr_model_learning_rate,
-        )
         self.q_optimizer = optim.Adam(
             list(self.qf1.parameters()) + list(self.qf2.parameters()),
             lr=critic_learning_rate,
@@ -60,7 +47,7 @@ class CoreticAgent(GenericAgent):
 
         envs.single_observation_space.dtype = np.float32
         self.n_envs = envs.num_envs if isinstance(envs, VectorEnv) else 1
-        self.replay_buffer = EpisodicBuffer(
+        self.replay_buffer = ReplayBuffer(
             buffer_size,
             envs.single_observation_space,
             envs.single_action_space,
@@ -87,7 +74,6 @@ class CoreticAgent(GenericAgent):
         policy_frequency: int,
         target_network_frequency: int,
         tau: float,
-        trajectory_length: int | None = None,
     ):
         """
         Initialize a single training run. Sets up essential hyperparameters and configurations.
@@ -102,11 +88,6 @@ class CoreticAgent(GenericAgent):
             policy_frequency (int): Frequency with which to update the policy network.
             target_network_frequency (int): Frequency with which to update the target network.
             tau (float): Soft update factor.
-            trajectory_length (int | None): Desired length of trajectory samples from episodic replay
-                buffer.
-
-        Raises:
-            ValueError: If `trajectory_length` is too small for the given source and target lengths.
         """
 
         self.autotune = autotune
@@ -115,7 +96,8 @@ class CoreticAgent(GenericAgent):
             "If alpha is not given, autotune has to be enabled."
         )
 
-        # If automatic tuning of alpha is enabled, set up the corresponding variables and optimizers
+        # If automatic tuning of alpha is enabled, set up the corresponding variables and
+        # optimizers
         if autotune:
             self.target_entropy = -torch.prod(
                 torch.Tensor(self.envs.single_action_space.shape).to(self.device)
@@ -135,21 +117,6 @@ class CoreticAgent(GenericAgent):
         self.policy_frequency = policy_frequency
         self.target_network_frequency = target_network_frequency
         self.tau = tau
-
-        # Set the trajectory length, falling back to the sum of source and target lengths if
-        # not specified
-        self.trajectory_length = (
-            trajectory_length
-            if trajectory_length
-            else self.src_seq_length + self.tgt_seq_length
-        )
-
-        assert (
-            self.trajectory_length >= self.src_seq_length + self.tgt_seq_length
-        ), ValueError(
-            f"Trajectory length({trajectory_length}) too small to for given source length ({trajectory_length})\
-            and target length ({trajectory_length})"
-        )
 
         # Initialize the global step counter
         self.global_step = 0
@@ -215,23 +182,18 @@ class CoreticAgent(GenericAgent):
 
     def update_agent(self, experience):
         """
-        Update the agent's models (e.g., Representation model, Q-networks, policy, value function)
-            based on episodic experience.
+        Update the agent's models (Q-networks, policy, value function, etc.) based on experience.
 
         Args:
-            experience: A tuple containing one timestep's worth of data,
+            experience: A tuple containing the data for one timestep (or episode),
                 usually (obs, next_obs, actions, rewards, dones, infos).
 
         Steps involved:
-            1. Add experience to the episodic replay buffer.
+            1. Add experience to the replay buffer.
             2. If enough samples are gathered, perform updates:
-                - Sample random episodes from the episodic replay buffer.
-                - Update representation model to get latent state sequences.
-                - Update critic network based on these latent states and other experience.
-                - Periodically update the actor and target networks.
-
-        Note: Unlike traditional replay buffers, this uses an episodic replay buffer that
-        samples entire episodes for training.
+                - Update critic network based sampled experience from replay buffer.
+                - Update actor network also based on sampled experience.
+                - Update target networks if it's time to do so.
         """
         # Add new experience to the episodic replay buffer
         # Assuming experience is a tuple: (obs, real_next_obs, actions, rewards, dones, infos)
@@ -240,146 +202,67 @@ class CoreticAgent(GenericAgent):
         if self.global_step < self.learning_starts:
             return
 
-        # Sample a batch of random episodes/trajectories from episodic replay buffer
-        samples = self.replay_buffer.sample(self.batch_size, self.trajectory_length)
-
-        # Update Represenation Model
-        # This will provide a compact state representation for each observation
-        state_sequences = self.update_repr_model(samples)
+        # Sample batch of transitions from replay buffer
+        batch = self.replay_buffer.sample(self.batch_size)
 
         # Update the Critic network
-        self.update_critic(samples, state_sequences)
+        self.update_critic(batch)
 
         # Update the Actor network
         # Only update the actor network periodically, as defined by policy_frequency
         if self.global_step % self.policy_frequency == 0:
-            self.update_actor(state_sequences)
+            self.update_actor(batch)
 
         # Update the Target Networks
         # Only update the target networks periodically, as defined by target_network_frequency
         if self.global_step % self.target_network_frequency == 0:
             self.update_target_networks()
 
-    def update_repr_model(self, samples: EpisodicBufferSamples):
-        """
-        Updates the state representation learning model using the provided batch of
-        experience.
-
-        Args:
-            samples (EpisodicBufferSamples):  The batch of experience sequences sampled
-                from the replay buffer. Each sequence contains observations, actions, rewards,
-                and done flags.
-
-        Returns:
-            state_sequences (torch.Tensor): The state representation used for critic
-                and actor updates.
-                shape: (batch_size, state_seq_len, repr_dim).
-        """
-        # Calculate the number of subsequences as source to produce states per trajectory
-        state_seq_len = self.trajectory_length - self.tgt_seq_length
-
-        state_sequences = torch.empty(
-            (self.batch_size, state_seq_len, self.repr_dim)
-        ).to(self.device)
-        total_loss = 0
-
-        # Loop over each potential starting point for the source sequence within a trajectory.
-        for t in range(state_seq_len):
-            # 1. Calculate the bounds for the source and target sequences
-            src_start = max(0, t - self.src_seq_length + 1)
-            tgt_end = t + 1 + self.tgt_seq_length  # exclusive
-
-            # 2. Split along sequence dimension into source and target sequences
-            src, tgt = (
-                samples.observations[:, src_start : t + 1, :],
-                samples.observations[:, t + 1, tgt_end, :],
-            )
-
-            # Pad source to match expected src_seq_length
-            src = self.pad_source(src)
-
-            # 3. Produce state representations and future observations
-            predictions, enc_out = self.repr_model(src, full_output=True)
-
-            # 4. Store final element along sequence dimension of enc_out is the state s_t,
-            # given obs o_t.
-            state_sequences[t] = enc_out[:, -1, :]
-
-            # 5. Compute representation model loss
-            total_loss += F.mse_loss(predictions, tgt)
-
-        # 6. Mean loss across all source-target pairs in a trajectory
-        total_loss /= state_seq_len
-
-        # 7. Perform backpropagation to update the representation learning model.
-        self.repr_optimizer.zero_grad()
-        total_loss.backward()
-        self.repr_optimizer.step()
-
-        return state_sequences
-
-    def update_critic(self, samples: EpisodicBufferSamples, state_sequences):
+    def update_critic(self, batch: ReplayBufferSamples):
         """
         Updates the critic network using the given samples and state sequences.
 
         Args:
-            samples (EpisodicBufferSamples): The batch of experience sequences sampled
-                from the replay buffer. Each sequence contains observations, actions, rewards,
+            batch (ReplayBufferSamples): The batch of transitions sampled from the
+                replay buffer. Each sequence contains observations, actions, rewards,
                 and done flags.
-            state_sequences (torch.Tensor): The batch of latent state sequences corresponding
-                to the observations in 'samples'.
-                shape: (batch_size, state_seq_len, repr_dim).
+        Returns:
+            None: The method updates the critic network in-place.
         """
-        # Number of source sequences per trajectory
-        state_seq_len = state_sequences.size(1)
+        with torch.no_grad():
+            # 1. Sample next action and compute Q-value targets
+            next_state_actions, next_state_log_pi, _ = self.sample_action(
+                batch.next_observations
+            )
+            qf1_next_target = self.qf1_target(
+                batch.next_observations, next_state_actions
+            )
+            qf2_next_target = self.qf2_target(
+                batch.next_observations, next_state_actions
+            )
 
-        # Initialize loss and current states
-        curr_states = state_sequences[:, 0, :]
-        qf_loss = 0
+            # 2. Compute the minimum Q-value target and the target for the Q-function
+            # update
+            min_qf_next_target = (
+                torch.min(qf1_next_target, qf2_next_target)
+                - self.alpha * next_state_log_pi
+            )
+            next_q_value = batch.rewards.flatten() + (
+                1 - batch.dones.flatten()
+            ) * self.gamma * min_qf_next_target.view(-1)
 
-        # Loop through each time step in the trajectory
-        # Note: We don't have next_states for the last time step in each trajectory,
-        # so we loop until the (n_src_per_batch - 1)th time step.
-        for t in range(state_seq_len - 1):
-            # 1. Get next state sequences
-            next_states = state_sequences[:, t + 1, :]
+        # 3. Compute the Q-values and the MSE loss for both critics
+        qf1_a_values = self.qf1(batch.observations, batch.actions).view(-1)
+        qf2_a_values = self.qf2(batch.observations, batch.actions).view(-1)
+        qf1_loss = F.mse_loss(qf1_a_values, next_q_value)
+        qf2_loss = F.mse_loss(qf2_a_values, next_q_value)
+        qf_loss = qf1_loss + qf2_loss
 
-            with torch.no_grad():
-                # 2. Sample next action and compute Q-value targets
-                next_state_actions, next_state_log_pi, _ = self.sample_action(
-                    next_states
-                )
-                qf1_next_target = self.qf1_target(next_states, next_state_actions)
-                qf2_next_target = self.qf2_target(next_states, next_state_actions)
-
-                # 3. Compute the minimum Q-value target and the target for the Q-function update
-                min_qf_next_target = (
-                    torch.min(qf1_next_target, qf2_next_target)
-                    - self.alpha * next_state_log_pi
-                )
-                next_q_value = samples.rewards[:, t].flatten() + (
-                    1 - samples.dones[:, t].flatten()
-                ) * self.gamma * min_qf_next_target.view(-1)
-
-            # 4. Compute the Q-values and the MSE loss for both critics
-            qf1_a_values = self.qf1(curr_states, samples.actions[:, t, :]).view(-1)
-            qf2_a_values = self.qf2(curr_states, samples.actions[:, t, :]).view(-1)
-            qf1_loss = F.mse_loss(qf1_a_values, next_q_value)
-            qf2_loss = F.mse_loss(qf2_a_values, next_q_value)
-            qf_loss += qf1_loss + qf2_loss
-
-            # Update current states
-            curr_states = next_states
-
-        # Mean loss across all source-target pairs in a trajectory
-        qf_loss /= state_seq_len - 1
-
-        # 5. Update critic model
+        # 4. Update critic model
         self.q_optimizer.zero_grad()
         qf_loss.backward()
         self.q_optimizer.step()
 
-        # Log Q-function loss information every 100 steps.
         if self.global_step % self.log_freq == 0:
             self.writer.add_scalar(
                 "losses/qf1_values", qf1_a_values.mean().item(), self.global_step
@@ -393,52 +276,40 @@ class CoreticAgent(GenericAgent):
                 "losses/qf_loss", qf_loss.item() / 2.0, self.global_step
             )
 
-    def update_actor(self, state_sequences):
+    def update_actor(self, batch: ReplayBufferSamples):
         """
         Updates the actor network using the given state sequences.
 
         Args:
-            state_sequences (torch.Tensor): The batch of latent state sequences corresponding
-                to the observations.
-                shape: (batch_size, state_seq_len, repr_dim).
+            batch (ReplayBufferSamples): The batch of transitions sampled from the
+                replay buffer. Each sequence contains observations, actions, rewards,
+                and done flags.
 
         Returns:
-            None: The method updates the actor network and optionally the temperature parameter
-                in-place.
+            None: The method updates the actor network and optionally the
+                temperature parameter in-place.
         """
-
+        # The loop here runs multiple updates for each actor update,
+        # which is specified by self.policy_frequency.
         for _ in range(self.policy_frequency):
-            # Number of source sequences per trajectory
-            n_src_per_batch = state_sequences.size(1)
+            # 1. Sample Actions:
+            # Using the current policy, sample actions and their log
+            # probabilities from the current state batch.
+            pi, log_pi, _ = self.sample_action(batch.observations)
 
-            # Initialize actor loss and current batch of states
-            curr_states = state_sequences[:, 0, :]
-            actor_loss = 0
+            # 2. Compute the Q-values of the sampled actions using both the
+            # Q-functions (Q1 and Q2).
+            qf1_pi = self.qf1(batch.observations, pi)
+            qf2_pi = self.qf2(batch.observations, pi)
 
-            for t in range(n_src_per_batch):
-                curr_states = state_sequences[:, t, :]
+            # Take the minimum Q-value among the two Q-functions to improve
+            # robustness.
+            min_qf_pi = torch.min(qf1_pi, qf2_pi).view(-1)
 
-                # 1. Sample Actions:
-                # Using the current policy, sample actions and their log
-                # probabilities from the current batch of states.
-                pi, log_pi, _ = self.sample_action(curr_states)
-
-                # 2. Compute the Q-values of the sampled actions using both the
-                # Q-functions (Q1 and Q2).
-                qf1_pi = self.qf1(curr_states, pi)
-                qf2_pi = self.qf2(curr_states, pi)
-
-                # Take the minimum Q-value among the two Q-functions to improve
-                # robustness.
-                min_qf_pi = torch.min(qf1_pi, qf2_pi).view(-1)
-
-                # 3. Compute Actor Loss:
-                # The actor aims to maximize this quantity, which corresponds
-                # to maximizing Q-value and entropy.
-                actor_loss += (self.alpha * log_pi - min_qf_pi).mean()
-
-            # Mean loss across all source-target pairs in a trajectory
-            actor_loss /= n_src_per_batch
+            # 3. Compute Actor Loss:
+            # The actor aims to maximize this quantity, which corresponds
+            # to maximizing Q-value and entropy.
+            actor_loss = (self.alpha * log_pi - min_qf_pi).mean()
 
             # 4. Perform backpropagation to update the actor network.
             self.actor_optimizer.zero_grad()
@@ -449,21 +320,13 @@ class CoreticAgent(GenericAgent):
             # If self.autotune is True, the temperature parameter alpha is
             # also learned.
             if self.autotune:
-                alpha_loss = 0
-                for t in range(n_src_per_batch):
-                    curr_states = state_sequences[:, t, :]
-                    # Sample actions again (not strictly needed, could reuse above)
-                    with torch.no_grad():
-                        _, log_pi, _ = self.sample_action(curr_states)
+                # Sample actions again (not strictly needed, could reuse above)
+                with torch.no_grad():
+                    _, log_pi, _ = self.sample_action(batch.observations)
 
-                    # Compute the loss for alpha, aiming to keep policy entropy
-                    # close to target_entropy.
-                    alpha_loss += (
-                        -self.log_alpha * (log_pi + self.target_entropy)
-                    ).mean()
-
-                # Mean loss across all source-target pairs in a trajectory
-                alpha_loss /= n_src_per_batch
+                # Compute the loss for alpha, aiming to keep policy entropy
+                # close to target_entropy.
+                alpha_loss = (-self.log_alpha * (log_pi + self.target_entropy)).mean()
 
                 # Perform backpropagation to update alpha.
                 self.alpha_optimizer.zero_grad()
@@ -510,7 +373,6 @@ class CoreticAgent(GenericAgent):
         policy_frequency: int,
         target_network_frequency: int,
         tau: float,
-        trajectory_length: int,
     ):
         """
         Train the Soft Actor-Critic (SAC) agent.
@@ -520,15 +382,14 @@ class CoreticAgent(GenericAgent):
             batch_size (int): The size of each batch of experiences used for training.
             learning_starts (int): The timestep at which learning should begin.
             alpha (float | None): The temperature parameter for the SAC algorithm.
-                If None, it will be learned if autotune is True.
+                                    If None, it will be learned if autotune is True.
             autotune (bool): Whether to automatically tune the temperature parameter.
             gamma (float): The discount factor for future rewards.
             policy_frequency (int): The frequency with which the policy should be updated.
             target_network_frequency (int): The frequency of updating the target network.
             tau (float): The soft update coefficient for updating the target network.
-            trajectory_length (int | None): The length of trajectories sampled from episodic
-                replay buffer.
         """
+        # Initialize the SAC agent with the provided parameters
         self.initialize(
             batch_size=batch_size,
             learning_starts=learning_starts,
@@ -538,7 +399,6 @@ class CoreticAgent(GenericAgent):
             policy_frequency=policy_frequency,
             target_network_frequency=target_network_frequency,
             tau=tau,
-            trajectory_length=trajectory_length,
         )
 
         # Start timer
@@ -651,27 +511,6 @@ class CoreticAgent(GenericAgent):
             )
             self.writer.add_scalar(f"test/avg_return", avg_return, i + 1)
 
-    def pad_source(self, x):
-        """Padding on the starting ends of the series along sequence dimension
-        with zero at the sequence boundaries to match source sequence length expected
-        by representation model.
-
-        Args:
-            x (torch.FloatTensor): A source sequence.
-                shape: (batch_size, seq_length, repr_dim)
-
-        Returns:
-            torch.FloatTensor: padded sequence if necessary else the original sequence.
-        """
-        # Calculate how much padding is needed
-        padding_needed = self.src_seq_length - x.size(1)
-
-        # Pad src sequence along the sequence dimension (dim=1) to match src_seq_length
-        if padding_needed > 0:
-            src = F.pad(src, (0, 0, padding_needed, 0), "constant", 0)
-
-        return src
-
 
 if __name__ == "__main__":
     # Hyperparameters
@@ -696,4 +535,4 @@ if __name__ == "__main__":
 
     envs = gym.make_env(env_id, seed)
 
-    agent = CoreticAgent()
+    agent = SACAgent()

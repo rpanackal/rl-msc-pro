@@ -5,16 +5,18 @@ import gym
 import numpy as np
 import torch
 
-from .agents import SACAgent
-from .core.config import RLExperimentConfig, SACAgentConfig
-from .envs.utils import make_env
-from .utils import set_torch_seed
+from ..agents import SACAgent
+from ..config import ReinforcedLearnerConfig, SACAgentConfig
+from ..envs.utils import make_env
+from ..utils import set_torch_seed
 
+from torch.utils.tensorboard import SummaryWriter
 
 if __name__ == "__main__":
-    config = RLExperimentConfig()
-    config.agent = SACAgentConfig()
-
+    config = ReinforcedLearnerConfig(
+        agent=SACAgentConfig(),
+        total_timesteps=10000
+    )
     current_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     config.name = f"{config.env_id}_{config.agent.name}_{current_datetime}"
 
@@ -33,27 +35,34 @@ if __name__ == "__main__":
     print("Observation Space: ", envs.single_observation_space)
     print("Action Space: ", envs.single_action_space)
 
+    # Setup trial logging
+    current_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    trial_name = f"{config.name}_{config.agent.name}_{current_datetime}"
+    log_dir = config.checkpoint_dir / trial_name
+    writer = SummaryWriter(log_dir=log_dir)
+
     agent = SACAgent(
         envs=envs,
-        critic_learning_rate=config.critic_optimizer.lr,
-        actor_learning_rate=config.actor_optimizer.lr,
-        buffer_size=config.replay_buffer.buffer_size,
+        critic_learning_rate=config.agent.critic_optimizer.lr,
+        actor_learning_rate=config.agent.actor_optimizer.lr,
+        buffer_size=config.agent.buffer.buffer_size,
         device=config.device,
+        writer=writer
     )
 
-    start_time = time.time()
-
-    config.total_timesteps = 10000
+    
     agent.train(
         total_timesteps=config.total_timesteps,
-        batch_size=config.replay_buffer.batch_size,
+        batch_size=config.batch_size,
         learning_starts=config.learning_starts,
         alpha=config.agent.alpha,
         autotune=config.agent.autotune,
         gamma=config.agent.gamma,
         policy_frequency=config.agent.policy_frequency,
         target_network_frequency=config.agent.target_network_frequency,
-        tau=config.agent.tau,
+        tau=config.agent.tau
     )
 
+    agent.test(n_episodes=10)
+    
     envs.close()

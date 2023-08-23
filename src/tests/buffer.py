@@ -6,12 +6,12 @@ import gym
 import numpy as np
 import torch
 
-from ..core.config import RLExperimentConfig, SACAgentConfig
+from ..config import ReinforcedLearnerConfig, SACAgentConfig
 from ..envs.utils import make_env
 from ..utils import set_torch_seed
 
 def test_episodic_buffer(envs, config):
-    rb = EpisodicBuffer(config.replay_buffer.buffer_size,
+    rb = EpisodicBuffer(config.agent.buffer.buffer_size,
                         envs.single_observation_space,
                         envs.single_action_space,
                         config.device)
@@ -32,26 +32,27 @@ def test_episodic_buffer(envs, config):
 
             # print(f"Observations from env in train, shape: {next_obs.shape}, type: {type(next_obs)}")
 
-            experience = (obs, actions, rewards, dones)
+            experience = (obs, next_obs, actions, rewards, dones, infos)
             rb.add(*experience)
 
             obs = next_obs
 
     samples = rb.sample(2, desired_length=100)
-    print(f"samples: shape {samples.observations.shape} type {type(samples.observations)}")
+    print(f"Samples of batch 2 with desired length set: shape {samples.observations.shape} type {type(samples.observations)}")
     
     samples = rb.sample(2)
-    print(f"samples: shape {len(samples.observations)} type {type(samples.observations)}")
+    print(f"Samples of batch 2: shape {len(samples.observations)} type {type(samples.observations)}")
     if isinstance(samples.observations, list):
         for sample in samples.observations:
             print(f"episode: shape {sample.shape} type {type(sample)}")
 
 
 if __name__ == "__main__":
-    config = RLExperimentConfig()
-    config.agent = SACAgentConfig()
-    config.total_timesteps = 10000
+    config = ReinforcedLearnerConfig(
+        agent=SACAgentConfig(),
+        total_timesteps=10000
 
+    )
     current_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     config.name = f"{config.env_id}_{config.agent.name}_{current_datetime}"
 

@@ -1,2 +1,2 @@
 from .q_learning import QLearningAgent
-from .my_sac import SACAgent
+from .sac import SACAgent
