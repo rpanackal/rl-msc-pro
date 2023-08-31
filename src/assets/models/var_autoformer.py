@@ -2,57 +2,7 @@ import torch
 import torch.nn as nn
 
 from .autoformer import Encoder, Decoder, Autoformer
-
-
-class VariationalLayer(nn.Module):
-    """
-    Variational Layer to generate parameters for a Gaussian distribution.
-    This layer returns mean and log variance given some input x.
-    """
-
-    def __init__(self, embed_dim):
-        """
-        Initialize the Variational Layer.
-
-        Args:
-            embed_dim (int): The dimension of the embedding/hidden layer.
-        """
-        super().__init__()
-        self.mean_layer = nn.Linear(embed_dim, embed_dim)
-        self.logvar_layer = nn.Linear(embed_dim, embed_dim)
-
-    def forward(self, x):
-        """
-        Forward pass to compute the mean and log variance.
-
-        Args:
-            x (Tensor): Input tensor of shape (batch_size, embed_dim)
-
-        Returns:
-            mean (Tensor): Mean parameter of shape (batch_size, embed_dim)
-            logvar (Tensor): Log variance parameter of shape (batch_size, embed_dim)
-        """
-        mean = self.mean_layer(x)
-        logvar = self.logvar_layer(x)
-        return mean, logvar
-
-    def reparameterize(self, mean, logvar):
-        """
-        Reparameterization trick to sample from the Gaussian distribution.
-
-        Args:
-            mean (Tensor): Mean of the Gaussian distribution.
-                shape: (batch_size, embed_dim)
-            logvar (Tensor): Log variance of the Gaussian distribution.
-                shape: (batch_size, embed_dim)
-
-        Returns:
-            z (Tensor): Sampled latent variable from the Gaussian distribution.
-                shape: (batch_size, embed_dim)
-        """
-        std = torch.exp(0.5 * logvar)
-        eps = torch.randn_like(std)
-        return mean + eps * std
+from ..layers import VariationalLayer
 
 
 class VariationalEncoder(Encoder):
@@ -60,11 +10,40 @@ class VariationalEncoder(Encoder):
     Variational Encoder is an extension of the Encoder with an added Variational Layer.
     """
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.variational_layer = VariationalLayer(
-            self.enc_blocks[0].auto_corr.embed_dim
+    def __init__(
+        self,
+        embed_dim: int,
+        expanse_dim: int,
+        kernel_size: int,
+        corr_factor: float,
+        n_blocks: int,
+        n_heads: int,
+        dropout: float,
+    ) -> None:
+        """_summary_
+
+        Args:
+            embed_dim (int): Dimensionality of embedding space of sequence elements.
+            expanse_dim (int): Dimensionality of space to which embeddings are projected to,
+                then back from within feed forward layer.
+            kernel_size (int): size of the window used for the average pooling to
+                compute the trend component.
+            corr_factor (float): A hyperparameter that controls number of top
+                auto correlation delays considered.
+            n_blocks (int): Number of encoder blocks.
+            n_heads (int): Number of autocorrelation heads.
+            dropout (float): _description_
+        """
+        super().__init__(
+            embed_dim=embed_dim,
+            expanse_dim=expanse_dim,
+            kernel_size=kernel_size,
+            corr_factor=corr_factor,
+            n_blocks=n_blocks,
+            n_heads=n_heads,
+            dropout=dropout,
         )
+        self.variational_layer = VariationalLayer(embed_dim=embed_dim)
 
     def forward(self, x, attn_mask=None):
         """
@@ -91,16 +70,26 @@ class VariationalDecoder(Decoder):
     """
 
     def forward(
-        self, x_seasonal, x_trend, latent, enc_output, cross_mask=None, tgt_mask=None
+        self,
+        seasonal_init,
+        trend_init,
+        enc_output,
+        latent,
+        cross_mask=None,
+        tgt_mask=None,
     ):
         """
         Forward pass to decode the encoded representations.
 
         Args:
-            x_seasonal (Tensor): Seasonal component
-            x_trend (Tensor): Trend component
-            latent (Tensor): Latent variable
+            seasonal_init (_type_): _description_
+                shape: (batch_size, pefex_length + tgt_seq_length, embed_dim)
+            trend_init (_type_): _description_
+                shape: (batch_size, prefix_length + tgt_seq_length, src_feat_dim)
             enc_output (Tensor): Output from the Encoder
+                shape: (batch_size, src_seq_length, embed_dim)
+            latent (Tensor): The latent sampled from latent distribution.
+                shape: (batch_size, embed_dim)
             cross_mask (Tensor, optional): Cross-attention mask
             tgt_mask (Tensor, optional): Target attention mask
 
@@ -111,9 +100,16 @@ class VariationalDecoder(Decoder):
                 1: (Tensor): The trend part.
                     shape: (batch_size, prefix_length + tgt_seq_length, tgt_feat_dim)
         """
-        x_seasonal += latent  # Incorporate latent variables
-        x_trend += latent  # Incorporate latent variables
-        return super().forward(x_seasonal, x_trend, enc_output, cross_mask, tgt_mask)
+        seasonal_init += latent.unsqueeze(1)  # Incorporate latent variable
+        # trend_init += latent  # Incorporate latent variable
+
+        return super().forward(
+            seasonal_init=seasonal_init,
+            trend_init=trend_init,
+            enc_output=enc_output,
+            cross_mask=cross_mask,
+            tgt_mask=tgt_mask,
+        )
 
 
 class VariationalAutoformer(Autoformer):
@@ -136,20 +132,48 @@ class VariationalAutoformer(Autoformer):
         tgt_seq_length: int,
         cond_prefix_frac: float,
         dropout: float,
-    ):
-        super().__init__(src_feat_dim,
-        tgt_feat_dim,
-        embed_dim,
-        expanse_dim,
-        kernel_size,
-        corr_factor,
-        n_enc_blocks,
-        n_dec_blocks,
-        n_heads,
-        src_seq_length,
-        tgt_seq_length,
-        cond_prefix_frac,
-        dropout)
+        full_output: bool = False
+    ) -> None:
+        """_summary_
+
+        Args:
+            src_feat_dim (int): Feature dimension target sequence elements
+            tgt_feat_dim (int): Feature dimension of target sequence elements
+            embed_dim (int): Dimensionality of embedding space of sequence elements.
+            expanse_dim (int): Dimensionality of space to which embeddings are projected to,
+                then back from within feed forward layer.
+            kernel_size (int): size of the window used for the average pooling to
+                compute the trend component.
+            corr_factor (float): A hyperparameter that controls number of top
+                auto correlation delays considered.
+            n_enc_blocks (int): Number of encoder blocks.
+            n_dec_blocks (int): Number of decoder blocks.
+            n_heads (int): Number of autocorrelation heads.
+            src_seq_length (int): Length of source sequence
+            tgt_seq_length (int): Length of target sequence
+            cond_prefix_frac (float): The fraction of the source sequence's ending used
+                as a conditional prefix for the decoder input, influencing the target
+                prediction.
+            dropout (float): _description_
+            full_output (bool, optional): Whether to output encoder's results.
+                Defaults to False.
+        """
+        super().__init__(
+            src_feat_dim=src_feat_dim,
+            tgt_feat_dim=tgt_feat_dim,
+            embed_dim=embed_dim,
+            expanse_dim=expanse_dim,
+            kernel_size=kernel_size,
+            corr_factor=corr_factor,
+            n_enc_blocks=n_enc_blocks,
+            n_dec_blocks=n_dec_blocks,
+            n_heads=n_heads,
+            src_seq_length=src_seq_length,
+            tgt_seq_length=tgt_seq_length,
+            cond_prefix_frac=cond_prefix_frac,
+            dropout=dropout,
+            full_output=full_output
+        )
 
         self.encoder = VariationalEncoder(
             embed_dim=embed_dim,
@@ -175,6 +199,7 @@ class VariationalAutoformer(Autoformer):
     def forward(
         self,
         x_enc,
+        x_dec: torch.FloatTensor | None = None,
         src_mask=None,
         cross_mask=None,
         tgt_mask=None,
@@ -185,13 +210,18 @@ class VariationalAutoformer(Autoformer):
         Forward pass through the Variational Autoformer.
 
         Args:
-            x_enc (Tensor): Encoder input
-            src_mask (Tensor, optional): Source mask for the encoder
-            cross_mask (Tensor, optional): Cross-attention mask
-            tgt_mask (Tensor, optional): Target attention mask
-            full_output (bool, optional): Whether to return encoder's output and other 
-                intermediaries. Defaults to False.
-            enc_only (bool, optional): Whether to only run the encoder, default False
+            x_enc (torch.FloatTensor): Input source sequence to encoder in feature space.
+                shape: (batch_size, src_seq_length, src_feat_dim)
+            x_dec (torch.FloatTensor): Conditioning input to decoder. Added to seasonal
+                initalizaiton along the target sequence length. The feature dimension needs
+                to be less than src_feat_dim.
+                shape: (batch_size, tgt_seq_length, some_dim)
+            src_mask (_type_, optional): _description_. Defaults to None.
+            cross_mask (_type_, optional): _description_. Defaults to None.
+            tgt_mask (_type_, optional): _description_. Defaults to None.
+            full_output (bool, optional): Whether to output encoder's results.
+                Defaults to False.
+            enc_only (bool, optional): Whether to use encoder only. Defaults to False.
 
         Returns:
             dec_output (Tensor): The sum of trend and seasonal part produced
@@ -200,28 +230,48 @@ class VariationalAutoformer(Autoformer):
             enc_output (Tensor): The Encoder's output.
                 shape: (batch_size, src_seq_length, embed_dim)
             mean (Tensor): Mean parameter of the Gaussian .
-                shape: (batch_size, embed_dim)
+                shape: (batch_size, src_seq_length, embed_dim)
             logvar (Tensor): Log variance parameter of the Gaussian distribution.
-                shape: (batch_size, embed_dim)
+                shape: (batch_size, src_seq_length, embed_dim)
             latent (Tensor): The latent sampled from latent distribution.
-                shape: (batch_size, embed_dim)
+                shape: (batch_size, src_seq_length, embed_dim)
         """
-        enc_output, mean, logvar = self.encoder(x_enc, src_mask)
-        latent = self.encoder.variational_layer.reparameterize(mean, logvar)
-        
+        full_output = full_output or self.full_output
+        # print(f"x_enc type {type(x_enc)} shape {x_enc.shape}")
+        # print(f"x_dec type {type(x_dec)} shape {x_dec.shape if x_dec else None}")
+
+        enc_output, mean, logvar = self.encoder(
+            self.positional_encoding(self.enc_embedding(x_enc)), src_mask
+        )
+        # print(f"enc_output type {type(enc_output)} shape {enc_output.shape}")
+        # print(f"mean type {type(mean)} shape {mean.shape}")
+
+        latent = self.encoder.variational_layer.reparameterize(
+            mean, logvar
+        )  # (batch_size, embed_dim)
+        # print(f"latent type {type(latent)} shape {latent.shape}")
+
         if enc_only:
             return enc_output, mean, logvar, latent
 
-        seasonal_init, trend_init = self.decoder_initializer(x_enc)
-        seasonal_init += latent  # Incorporate latent variable
-        trend_init += latent  # Incorporate latent variable
+        # decoder initilialization section
+        seasonal_init, trend_init = self.decoder_initializer(x_enc, x_dec)
+        # print(f"seasonal_init type {type(seasonal_init)} shape {seasonal_init.shape}")
+        # print(f"trend_init type {type(trend_init)} shape {trend_init.shape}")
 
         seasonal_out, trend_out = self.decoder(
-            seasonal_init, trend_init, latent, enc_output, cross_mask, tgt_mask
+            seasonal_init=self.positional_encoding(self.dec_embedding(seasonal_init)),
+            trend_init=trend_init,
+            enc_output=enc_output,
+            latent=latent,
+            cross_mask=cross_mask,
+            tgt_mask=tgt_mask,
         )
+        # print(f"seasonal_out type {type(seasonal_out)} shape {seasonal_out.shape}")
+        # print(f"trend_out type {type(trend_out)} shape {trend_out.shape}")
 
-        dec_output =  (trend_out + seasonal_out)[:, -self.tgt_seq_length:, :]
+        dec_output = (trend_out + seasonal_out)[:, -self.tgt_seq_length :, :]
+
         if full_output:
             return dec_output, enc_output, mean, logvar, latent
-
         return dec_output

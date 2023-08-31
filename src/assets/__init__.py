@@ -1,1 +1,1 @@
-from .models import Autoformer
+from .models import Autoformer, VariationalAutoformer

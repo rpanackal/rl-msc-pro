@@ -13,6 +13,7 @@ class SoftQNetwork(nn.Module):
         """
         super().__init__()
         self.env = env
+        self.observation_dim = observation_dim
 
         # Calculate total input size from observation and action space
         input_dim = observation_dim + np.prod(
@@ -35,11 +36,6 @@ class SoftQNetwork(nn.Module):
             Q-value for the given observation and action.
         """
         # Concatenate the observation and action to form the input
-
-        # print("Type check in critic forward: ", type(x), type(a))
-        if not isinstance(x, torch.Tensor):
-            x = torch.Tensor(x)
-
         x = torch.cat([x, a], dim=1)
 
         x = F.relu(self.fc1(x))
@@ -49,4 +45,4 @@ class SoftQNetwork(nn.Module):
 
     def model_twin(self):
         """Return a new instance of the same class with the same configuration."""
-        return self.__class__(self.env)
+        return self.__class__(self.env, self.observation_dim)

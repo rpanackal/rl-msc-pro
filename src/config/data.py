@@ -27,5 +27,5 @@ class DataLoaderConfig(BaseModel):
 
 
 class BufferConfig(BaseModel):
-    buffer_size: int = int(1e6)
+    buffer_size: int = int(1e5)
     

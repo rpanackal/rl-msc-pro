@@ -8,7 +8,7 @@ from colorama import Fore, init
 from ..core.datamodels import LearningEpochResult
 from torch.utils.tensorboard import SummaryWriter
 from pathlib import PurePath
-
+from typing import Callable
 
 init(autoreset=True)
 
@@ -19,15 +19,17 @@ class SupervisedLearner:
     def __init__(
         self,
         model: nn.Module,
-        criterion,
+        criterion: Callable,
         optimizer: optim.Optimizer,
         config,
         train_loader: DataLoader | None = None,
         valid_loader: DataLoader | None = None,
         lr_scheduler: optim.lr_scheduler.LRScheduler | None = None,
+        custom_to_model: Callable | None = None,
+        custom_to_criterion: Callable | None = None,
         writer: SummaryWriter | None = None,
         log_freq: int = 10,
-        trial_dir: str | None = None,
+        checkpoint_dir: str | None = None,
     ) -> None:
         self.train_loader = train_loader
         self.valid_loader = valid_loader
@@ -35,37 +37,34 @@ class SupervisedLearner:
         self.criterion = criterion
         self.optimizer = optimizer
         self.config = config
+        self.device = self.config.device
+
+        self.custom_to_model = custom_to_model
+        self.custom_to_criterion = custom_to_criterion
 
         self.lr_scheduler = lr_scheduler
         self.log_freq = log_freq
-        self.trial_dir = trial_dir
+        self.checkpoint_dir = checkpoint_dir
 
-        # When trial_dir not set
-        if not self.trial_dir:
-            # Trial directory same as tensorboard log_dir if available
-            if writer:
-                self.trial_dir = PurePath(writer.get_logdir())
+        self.writer = writer
 
-            # Create a trial dir from config information and timestamp
-            else:
-                current_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-                trial_name = f"{self.config.dataset.name}_{self.config.model.name}_{current_datetime}"
-                self.trial_dir = self.config.checkpoint_dir / trial_name
-
-        self.writer = writer if writer else SummaryWriter(log_dir=str(self.trial_dir))
+        # When trial_dir not set, tensorboard log_dir used if available
+        if not self.checkpoint_dir and self.writer:
+            self.checkpoint_dir = PurePath(writer.get_logdir())
 
         self.incumbent_loss = float("inf")
         self._epoch = -1
         self._train_iter = -1
         self._valid_iter = -1
 
-    def train_batch(self, X_batch, y_batch):
+    def train_batch(
+        self,
+        batch,
+    ):
         """A training iteration step.
 
         Args:
-            X_batch (torch.Tensor): A batch for input data
-            y_batch (torch.Tensor): A batch of groundtruth
-
+            batch (tuple): A batch for input and target data.
         Returns:
             tuple[torch.Tensor, float]:
                 0: predictions of the model for input X_batch
@@ -76,31 +75,33 @@ class SupervisedLearner:
         # resets the gradients after every batch
         self.optimizer.zero_grad()
 
-        X_batch, y_batch = X_batch.to(self.config.device), y_batch.to(
-            self.config.device
-        )
-        predictions = self.model(X_batch)
+        args, kwargs = self.to_model(batch)
+        output = self.model(*args, **kwargs)
 
         # compute loss and backpropage the gradients
-        loss = self.criterion(predictions, y_batch)
+        args, kwargs = self.to_criterion(batch, output)
+        loss = self.criterion(*args, **kwargs)
         loss.backward()
 
         # update the weights
         self.optimizer.step()
 
-        if self._train_iter % self.log_freq == 0:
+        if self._train_iter % self.log_freq == 0 and self.writer:
             self.writer.add_scalar(
                 "train/iteration/loss", loss.item(), self._train_iter
             )
             self.writer.add_scalar(
                 "learning_rate", self.optimizer.param_groups[0]["lr"], self._train_iter
             )
-            print(f"\nTraining - Loss at iteration {self._train_iter}: {loss.item()}", end=" ")
+            print(
+                f"\nTraining - Loss at iteration {self._train_iter}: {loss.item()}",
+                end=" ",
+            )
 
         if self.lr_scheduler:
             self.lr_scheduler.step()
 
-        return predictions, loss
+        return output, loss
 
     def train_epoch(self):
         """Train the model for an epoch. Model weights are being updated ,and,
@@ -109,12 +110,11 @@ class SupervisedLearner:
         Returns:
             float: The training loss for one epoch
         """
-        assert self.train_loader is not None,\
-            ValueError(
-                "train_loader required to use epoch level training api of Learner \
+        assert self.train_loader is not None, ValueError(
+            "train_loader required to use epoch level training api of Learner \
                 class."
-            )
-    
+        )
+
         # initialize every epoch
         epoch_loss = 0
         datset_size = len(self.train_loader.dataset)
@@ -123,16 +123,17 @@ class SupervisedLearner:
         # set the model in training phase
         self.model.train()
 
-        for batch_id, (X_batch, y_batch) in enumerate(self.train_loader):
-            batch_size = len(X_batch)
+        for batch_id, batch in enumerate(self.train_loader):
+            batch_size = self.train_loader.batch_size
 
-            _, loss = self.train_batch(X_batch, y_batch)
+            _, loss = self.train_batch(batch)
 
             if self._train_iter % self.log_freq == 0:
                 current = (batch_id + 1) * batch_size
                 print(
                     f"| Epoch: {self._epoch} | "
-                    + f"Progress: [{current}/{datset_size}]", end=" "
+                    + f"Progress: [{current}/{datset_size}]",
+                    end=" ",
                 )
 
             # loss
@@ -141,14 +142,16 @@ class SupervisedLearner:
         print()
         return epoch_loss / n_batches
 
-    def validate_batch(self, X_batch, y_batch):
+    def validate_batch(
+        self,
+        batch,
+    ):
         """A validation iteration step.
 
         Note: It does not perform
         Args:
             X_batch (torch.Tensor): A batch for input data
             y_batch (torch.Tensor): A batch of groundtruth
-
         Returns:
             tuple[torch.Tensor, float]:
                 0: predictions of the model for input X_batch
@@ -156,27 +159,29 @@ class SupervisedLearner:
         """
         self._valid_iter += 1
 
-        X_batch, y_batch = X_batch.to(self.config.device), y_batch.to(
-            self.config.device
-        )
+        args, kwargs = self.to_model(batch)
 
         if self.model.training:  # Checks if the model is in training mode
             self.model.eval()
 
         # deactivates autograd
         with torch.no_grad():
-            predictions = self.model(X_batch)
+            output = self.model(*args, **kwargs)
 
-            # compute loss
-            loss = self.criterion(predictions, y_batch)
+            # Compute loss
+            args, kwargs = self.to_criterion(batch, output)
+            loss = self.criterion(*args, **kwargs)
 
         if self._valid_iter % self.log_freq == 0:
             self.writer.add_scalar(
                 "validation/iteration/loss", loss.item(), self._valid_iter
             )
-            print(f"\nValidation - Loss at iteration {self._valid_iter}: {loss.item()}", end=" ")
+            print(
+                f"\nValidation - Loss at iteration {self._valid_iter}: {loss.item()}",
+                end=" ",
+            )
 
-        return predictions, loss
+        return output, loss
 
     def validate_epoch(self):
         """Validate the model for an epoch on validation set. The validation
@@ -185,12 +190,10 @@ class SupervisedLearner:
         Returns:
             tuple: A tuple of length 2 with validation loss and accuracy for one epoch
         """
-        assert self.valid_loader is not None,\
-            ValueError(
-                "valid_loader required to use epoch level valiation api of Learner \
+        assert self.valid_loader is not None, ValueError(
+            "valid_loader required to use epoch level valiation api of Learner \
                  class."
-            )
-
+        )
 
         # initialize every epoch
         epoch_loss = 0
@@ -200,10 +203,10 @@ class SupervisedLearner:
         # deactivating dropout layers
         self.model.eval()
 
-        for batch_id, (X_batch, y_batch) in enumerate(self.valid_loader):
-            batch_size = len(X_batch)
+        for batch_id, batch in enumerate(self.valid_loader):
+            batch_size = self.valid_loader.batch_size
 
-            _, loss = self.validate_batch(X_batch, y_batch)
+            _, loss = self.validate_batch(batch)
 
             # keep track of loss
             epoch_loss += loss.item()
@@ -212,7 +215,8 @@ class SupervisedLearner:
                 current = (batch_id + 1) * batch_size
                 print(
                     f"| Epoch: {self._epoch} | "
-                    + f"Progress: [{current}/{datset_size}]", end=" "
+                    + f"Progress: [{current}/{datset_size}]",
+                    end=" ",
                 )
         print()
         return epoch_loss / n_batches
@@ -236,9 +240,10 @@ class SupervisedLearner:
         incumbent_found = valid_loss < self.incumbent_loss
         if incumbent_found:
             self.incumbent_loss = valid_loss
-
-        self.writer.add_scalar("train/epoch/loss", train_loss, self._epoch)
-        self.writer.add_scalar("validation/epoch/loss", valid_loss, self._epoch)
+        
+        if self.writer:
+            self.writer.add_scalar("train/epoch/loss", train_loss, self._epoch)
+            self.writer.add_scalar("validation/epoch/loss", valid_loss, self._epoch)
 
         print(
             Fore.GREEN
@@ -258,6 +263,58 @@ class SupervisedLearner:
             }
         )
 
+    def to_model(self, batch):
+        """
+        Prepare the input for the model's forward pass.
+        
+        Args:
+            batch: tuple
+                The batch of data to be processed. It is assumed to be a tuple (X_batch, y_batch).
+        
+        Returns:
+            args: list
+                Positional arguments to pass to the model.
+            kwargs: dict
+                Keyword arguments to pass to the model.
+        """
+        # Check if a custom function is provided, and if so, use it
+        if self.custom_to_model:
+            return self.custom_to_model(self, batch)
+        
+        # Default behavior: unpack the batch and move to the device
+        X_batch, _ = batch
+        
+        args = [X_batch.to(self.device)]
+        kwargs = {}
+        return args, kwargs
+
+    def to_criterion(self, batch, output):
+        """
+        Prepare the inputs for the loss calculation.
+        
+        Args:
+            batch: tuple
+                The batch of data. It is assumed to be a tuple (X_batch, y_batch).
+            output: tensor
+                The output from the model's forward pass.
+        
+        Returns:
+            args: list
+                Positional arguments to pass to the loss function.
+            kwargs: dict
+                Keyword arguments to pass to the loss function.
+        """
+        # Check if a custom function is provided, and if so, use it
+        if self.custom_to_criterion:
+            return self.custom_to_criterion(self, batch, output)
+        
+        # Default behavior: unpack the batch and move the label to the device
+        _, y_batch = batch
+        
+        args = [output, y_batch.to(self.device)]
+        kwargs = {}
+        return args, kwargs
+
     def save_checkpoint(self, result: dict):
         """To checkpoint model at any epoch of a trial by saving
         model.state_dict() and optimizer.state_dict().
@@ -265,23 +322,25 @@ class SupervisedLearner:
         Args:
             path: Path to trial directory
         """
+        if self.checkpoint_dir:
+            os.makedirs(self.checkpoint_dir, exist_ok=True)
 
-        os.makedirs(self.trial_dir, exist_ok=True)
+            checkpoint_path = self.checkpoint_dir / "checkpoint.pth"
+            checkpoint = {
+                "model_state_dict": self.model.state_dict(),
+                "optimizer_state_dict": self.optimizer.state_dict(),
+            }
+            torch.save(checkpoint, str(checkpoint_path))
 
-        checkpoint_path = self.trial_dir / "checkpoint.pth"
-        checkpoint = {
-            "model_state_dict": self.model.state_dict(),
-            "optimizer_state_dict": self.optimizer.state_dict(),
-        }
-        torch.save(checkpoint, str(checkpoint_path))
+            config_path = self.checkpoint_dir / "configuration.json"
+            with open(config_path, "w") as config_file:
+                config_file.write(self.config.model_dump_json())
 
-        config_path = self.trial_dir / "configuration.json"
-        with open(config_path, "w") as config_file:
-            config_file.write(self.config.model_dump_json(exclude={"device"}))
-
-        result_path = self.trial_dir / "result.json"
-        with open(result_path, "w") as result_file:
-            result_file.write(result.model_dump_json())
+            result_path = self.checkpoint_dir / "result.json"
+            with open(result_path, "w") as result_file:
+                result_file.write(result.model_dump_json())
+        else:
+            raise ValueError("Checkpoint directory not defined.")
 
     def load_checkpoint(self, path: str):
         """To load model checkpoint at any epoch of a trial by loading

@@ -5,7 +5,6 @@ class PositionWiseFeedForward(nn.Module):
     def __init__(self, embed_dim, hidden_dim, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
 
-        # ? Wh
         self.fc1 = nn.Linear(embed_dim, hidden_dim)
         self.relu = nn.ReLU()
         self.fc2 = nn.Linear(hidden_dim, embed_dim)

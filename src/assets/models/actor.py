@@ -46,9 +46,9 @@ class Actor(nn.Module):
         """
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
-        mean = self.fc_mean(x)
-        log_std = self.fc_logstd(x)
-        log_std = self._squash_log_std(log_std)
+        mean = self.fc_mean(x)  # (-inf, inf)
+        log_std = self.fc_logstd(x)  # (-inf, inf)
+        log_std = self._squash_log_std(log_std) # (LOG_STD_MIN, LOG_STD_MAX)
         return mean, log_std
 
     def _squash_log_std(self, log_std):
@@ -65,8 +65,9 @@ class Actor(nn.Module):
         Returns:
             Squashed log standard deviation tensor.
         """
-        log_std = torch.tanh(log_std)
-        return LOG_STD_MIN + 0.5 * (LOG_STD_MAX - LOG_STD_MIN) * (log_std + 1)
+        log_std = torch.tanh(log_std)  # (-1, 1)
+        # log_std + 1 shift range to (0, 2)
+        return LOG_STD_MIN + 0.5 * (LOG_STD_MAX - LOG_STD_MIN) * (log_std + 1) 
 
     def get_action(self, x):
         """Sample an action from the actor's policy, given an observation.
@@ -104,6 +105,10 @@ class Actor(nn.Module):
         The action scaling and bias ensure that actions are appropriately scaled
         and centered within the environment's bounds.
         """
+        if torch.isnan(mean).any() or torch.isnan(std).any():
+            print("NaN detected in mean or std")
+        if torch.isnan(self.action_scale).any() or torch.isnan(self.action_bias).any():
+            print("NaN detected in action_scale or action_bias")
         normal = torch.distributions.Normal(mean, std)
         x_t = normal.rsample()  # Reparameterization trick
         y_t = torch.tanh(x_t)  # Tanh squashing to bound the actions
@@ -113,8 +118,14 @@ class Actor(nn.Module):
         log_prob = normal.log_prob(x_t)
 
         # Enforce action bound; this correction term is necessary when using tanh
-        # squashing
+        # squashing. This correcting the log_prob of x_t to log_prob y_t.
         log_prob -= torch.log(self.action_scale * (1 - y_t.pow(2)) + 1e-6)
+
+        if torch.isnan(log_prob).any():
+            print("NaN detected in log_prob")
+
+        # you sum across all action dimensions to get a single scalar log_prob for 
+        # the entire multi-dimensional action.
         log_prob = log_prob.sum(1, keepdim=True)
         squashed_mean = torch.tanh(mean) * self.action_scale + self.action_bias
         return action, log_prob, squashed_mean

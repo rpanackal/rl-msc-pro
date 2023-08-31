@@ -16,25 +16,34 @@ from .core import GenericAgent
 class SACAgent(GenericAgent):
     def __init__(
         self,
-        envs: gym.vector.SyncVectorEnv,
+        envs: gym.vector.SyncVectorEnv | gym.Env,
         critic_learning_rate: float,
         actor_learning_rate: float,
         buffer_size: int,
         device: torch.device,
-        writer: SummaryWriter,
+        writer: SummaryWriter | None = None,
         log_freq: int = 100,
     ):
         assert isinstance(
             envs.single_action_space, gym.spaces.Box
         ), "only continuous action space is supported"
 
-        observation_dim = np.prod(envs.single_observation_space.shape)
+        if hasattr(envs, "num_envs"):
+            envs.single_observation_space.dtype = np.float32
+            self.observation_dim = np.prod(envs.single_observation_space.shape)
+            self.action_dim = np.prod(envs.single_action_space.shape)
+            self.n_envs = envs.num_envs
+        else:
+            envs.observation_space.dtype = np.float32
+            self.observation_dim = np.prod(envs.observation_space.shape)
+            self.action_dim = np.prod(envs.action_space.shape)
+            self.n_envs = 1
 
-        self.actor = Actor(envs, observation_dim).to(device)
-        self.qf1 = SoftQNetwork(envs, observation_dim).to(device)
-        self.qf2 = SoftQNetwork(envs, observation_dim).to(device)
-        self.qf1_target = SoftQNetwork(envs, observation_dim).to(device)
-        self.qf2_target = SoftQNetwork(envs, observation_dim).to(device)
+        self.actor = Actor(envs, self.observation_dim).to(device)
+        self.qf1 = SoftQNetwork(envs, self.observation_dim).to(device)
+        self.qf2 = SoftQNetwork(envs, self.observation_dim).to(device)
+        self.qf1_target = SoftQNetwork(envs, self.observation_dim).to(device)
+        self.qf2_target = SoftQNetwork(envs, self.observation_dim).to(device)
         self.qf1_target.load_state_dict(self.qf1.state_dict())
         self.qf2_target.load_state_dict(self.qf2.state_dict())
         self.q_optimizer = optim.Adam(
@@ -45,8 +54,6 @@ class SACAgent(GenericAgent):
             list(self.actor.parameters()), lr=actor_learning_rate
         )
 
-        envs.single_observation_space.dtype = np.float32
-        self.n_envs = envs.num_envs if isinstance(envs, VectorEnv) else 1
         self.replay_buffer = ReplayBuffer(
             buffer_size,
             envs.single_observation_space,
@@ -263,7 +270,7 @@ class SACAgent(GenericAgent):
         qf_loss.backward()
         self.q_optimizer.step()
 
-        if self.global_step % self.log_freq == 0:
+        if self.global_step % self.log_freq == 0 and self.writer:
             self.writer.add_scalar(
                 "losses/qf1_values", qf1_a_values.mean().item(), self.global_step
             )
@@ -337,7 +344,7 @@ class SACAgent(GenericAgent):
                 self.alpha = self.log_alpha.exp().item()
 
         # Log Actor loss and alpha every self.log_freq steps.
-        if self.global_step % self.log_freq == 0:
+        if self.global_step % self.log_freq == 0 and self.writer:
             self.writer.add_scalar(
                 "losses/actor_loss", actor_loss.item(), self.global_step
             )
@@ -429,23 +436,25 @@ class SACAgent(GenericAgent):
                     print(
                         f"global_step={self.global_step}, episodic_return={info['episode']['r']}"
                     )
-                    self.writer.add_scalar(
-                        "train/episodic_return", info["episode"]["r"], self.global_step
-                    )
-                    self.writer.add_scalar(
-                        "train/episodic_length", info["episode"]["l"], self.global_step
-                    )
-                    # Episodic information from any one of the environments is sufficient 
+                    if self.writer:
+                        self.writer.add_scalar(
+                            "train/episodic_return", info["episode"]["r"], self.global_step
+                        )
+                        self.writer.add_scalar(
+                            "train/episodic_length", info["episode"]["l"], self.global_step
+                        )
+                    # Episodic information from any one of the environments is sufficient
                     break
 
             # Log steps per second (SPS) every self.log_freq steps
             if self.global_step % self.log_freq == 0:
                 print("SPS:", int(self.global_step / (time.time() - start_time)))
-                self.writer.add_scalar(
-                    "train/SPS",
-                    int(self.global_step / (time.time() - start_time)),
-                    self.global_step,
-                )
+                if self.writer:
+                    self.writer.add_scalar(
+                        "train/SPS",
+                        int(self.global_step / (time.time() - start_time)),
+                        self.global_step,
+                    )
 
             # Increment the global step count
             self.global_step += 1
@@ -473,10 +482,7 @@ class SACAgent(GenericAgent):
 
         while min(episode_count) < n_episodes:
             # Sample actions from the trained policy
-            # actions, _, _ = self.sample_action(obs, to_numpy=True)
-            actions = np.array(
-                [self.envs.single_action_space.sample() for _ in range(self.n_envs)]
-            )
+            actions, _, _ = self.sample_action(obs, to_numpy=True)
 
             # Execute the actions in the environments
             next_obs, rewards, dones, _ = self.envs.step(actions)
@@ -489,11 +495,12 @@ class SACAgent(GenericAgent):
                     print(
                         f"Environment {i+1}, Episode {episode_count[i] + 1}: Total Reward: {episodic_returns[i]}"
                     )
-                    self.writer.add_scalar(
-                        f"test/env_{i+1}/episodic_return",
-                        episodic_returns[i],
-                        episode_count[i] + 1,
-                    )
+                    if self.writer:
+                        self.writer.add_scalar(
+                            f"test/env_{i+1}/episodic_return",
+                            episodic_returns[i],
+                            episode_count[i] + 1,
+                        )
                     all_returns[i].append(episodic_returns[i])
 
                     # Reset episodic return and increment count
@@ -509,7 +516,8 @@ class SACAgent(GenericAgent):
             print(
                 f"Environment {i+1}: Average Return over {n_episodes} episodes: {avg_return}"
             )
-            self.writer.add_scalar(f"test/avg_return", avg_return, i + 1)
+            if self.writer:
+                self.writer.add_scalar(f"test/avg_return", avg_return, i + 1)
 
 
 if __name__ == "__main__":

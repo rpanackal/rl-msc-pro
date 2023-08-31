@@ -1,11 +1,13 @@
 from typing import Union, NamedTuple, Any
 
+import gym
 import numpy as np
 import torch as th
 from gym import spaces
 from stable_baselines3.common.buffers import BaseBuffer, ReplayBufferSamples
 from stable_baselines3.common.type_aliases import RolloutBufferSamples
 from stable_baselines3.common.vec_env import VecNormalize
+from ..envs.normalization import RMVNormalizeVecObservation
 
 
 class EpisodicBufferSamples(NamedTuple):
@@ -30,6 +32,9 @@ class EpisodicBuffer(BaseBuffer):
         Equivalent to classic advantage when set to 1.
     :param gamma: Discount factor
     :param n_envs: Number of parallel environments
+    :param optimize_memory_usage: If True, next observations given are ignored.
+    :param shift_on_overflow: If true, during overflow the buffer is shifted left by 1 step, else
+        we overwrite existing entries starting from index 0 of buffer.
     """
 
     def __init__(
@@ -49,6 +54,7 @@ class EpisodicBuffer(BaseBuffer):
         self.next_observations, self.dones = None, None
 
         self.optimize_memory_usage = optimize_memory_usage
+        self.overflow = False
         self.reset()
 
     def reset(self) -> None:
@@ -77,30 +83,21 @@ class EpisodicBuffer(BaseBuffer):
         infos: list[dict[str, Any]] = None,
     ) -> None:
         """
-        :param obs: Observation
-        :param action: Action
-        :param reward:
-        :param done:
-        :param infos: (Currently unused)
+        Adds a new experience tuple to the episodic buffer.
+
+        Args:
+            obs: The observation at the current timestep.
+            next_obs: The observation at the next timestep.
+            action: The action taken at the current timestep.
+            reward: The reward received at the current timestep.
+            done: A boolean flag indicating if the episode terminated at this timestep.
+            infos: Additional info, currently unused.
         """
 
         # Reshape needed when using multiple envs with discrete observations
         # as numpy cannot broadcast (n_discrete,) to (n_discrete, 1)
         if isinstance(self.observation_space, spaces.Discrete):
             obs = obs.reshape((self.n_envs,) + self.obs_shape)
-
-        if self.full:
-            # Shift all data to make room for the new one at the last index
-            self.observations[:-1] = self.observations[1:]
-            self.actions[:-1] = self.actions[1:]
-            self.rewards[:-1] = self.rewards[1:]
-            self.dones[:-1] = self.dones[1:]
-
-            if not self.optimize_memory_usage:
-                self.next_observations[:-1] = self.next_observations[1:]
-
-            # The last index is now free for the new data
-            self.pos = self.buffer_size - 1
 
         # TODO: If termination needs to be handled separately, do that.
         self.observations[self.pos] = np.array(obs).copy()
@@ -112,22 +109,44 @@ class EpisodicBuffer(BaseBuffer):
             self.next_observations[self.pos] = np.array(next_obs).copy()
 
         self.pos += 1
-        if not self.full and self.pos == self.buffer_size:
+
+        if self.pos == self.buffer_size:
             self.full = True
+            self.pos = 0
 
     def sample(
         self,
         batch_size: int,
         desired_length: int | None = None,
-        env: VecNormalize | None = None,
-    ) -> RolloutBufferSamples:
+        env: RMVNormalizeVecObservation | gym.Env | None = None,
+    ) -> EpisodicBufferSamples:
+        """
+        Samples a random batch of episodes from the episodic buffer.
+
+        Args:
+            batch_size: Number of episodes to sample.
+            desired_length: Optional desired length for each sampled episode.
+            env: Optional environment for observation normalization.
+
+        Returns: 
+            (EpisodicBufferSamples): An EpisodicBufferSamples object containing the sampled episodes.
+        """
         # Step 1: Compute episode lengths and starting indices.
-        dones_indices = np.flatnonzero(self.swap_and_flatten(self.dones))
-        # We account for episode currently being added and starting episode in buffer
+        dones = self.dones.copy() if self.full else self.dones[:self.pos].copy()
+        
+        # Make sure while flattening dones, we will not join episodes from
+        # different environments in buffer and treat episodes from 
+        # different cycles differently.
+        #   - Assume last transition of progressing episode is done
+        dones[self.pos - 1, :] = 1
+        #   - Assume last transition is buffer is done, if full.
+        if self.full:
+             dones[-1, :] = 1
+        
+        dones_indices = np.flatnonzero(self.swap_and_flatten(dones))
+        # We account for starting episode in flattened buffer
         if dones_indices[0] != 0:
             dones_indices = np.hstack((np.array([-1]), dones_indices))
-        if dones_indices[-1] != self.pos - 1:
-            dones_indices = np.hstack((dones_indices, np.array([self.pos - 1])))
 
         # start_indices are inclusive, while end_indices are exclusive
         start_indices = dones_indices[0:-1] + 1
@@ -139,14 +158,18 @@ class EpisodicBuffer(BaseBuffer):
         if desired_length:
             episode_lengths = end_indices - start_indices
             valid_indices_idx = np.flatnonzero(episode_lengths >= desired_length)
-            if self.pos < batch_size * desired_length or len(valid_indices_idx) == 0:
+            if not self.full and self.pos < batch_size * desired_length:
                 raise ValueError(
-                    "Not enough time steps filled in buffer to sample batch of the desired length!"
+                    "Not enough episodes of batch size in the buffer! Try, start learning"
+                    + "after a larger number of timesteps."
                 )
         else:
             valid_indices_idx = list(range(len(start_indices)))
             if len(valid_indices_idx) < batch_size:
-                raise ValueError("Not enough episodes of batch size in the buffer!")
+                raise ValueError(
+                    "Not enough episodes of batch size in the buffer! Optionally, start learning"
+                    + "after a larger number of timesteps."
+                )
 
         # Step 3: Randomize sample episodes.
         valid_indices_idx = np.random.permutation(valid_indices_idx)
@@ -168,15 +191,20 @@ class EpisodicBuffer(BaseBuffer):
         ends: np.ndarray,
         batch_size: int,
         desired_length: int | None = None,
-        env: VecNormalize | None = None,
-    ) -> Union[ReplayBufferSamples, RolloutBufferSamples]:
+        env: RMVNormalizeVecObservation | None = None,
+    ) -> EpisodicBufferSamples:
         """
-        :param starts:
-        :param ends:
-        :param batch_size:
-        :param desired_length:
-        :param env: (Unused)
-        :return:
+        Internal method to retrieve samples based on given episode start and end indices.
+
+        Args:
+            starts: Array of starting indices for the episodes to sample.
+            ends: Array of ending indices for the episodes to sample.
+            batch_size: Number of episodes to sample.
+            desired_length: Optional desired length for each sampled episode.
+            env: Optional environment for observation normalization.
+
+        Returns:
+            (EpisodicBufferSamples): An EpisodicBufferSamples object containing the sampled episodes.
         """
         # Step 4: Get flattened view of episodes.
         observations = self.swap_and_flatten(self.observations)
@@ -186,7 +214,7 @@ class EpisodicBuffer(BaseBuffer):
 
         # Allow start sampling anywhere in the episode to get desired_length trajectory if given.
         sampled_obs, sampled_actions, sampled_rewards, sampled_dones = [], [], [], []
-    
+
         if not self.optimize_memory_usage:
             next_observations = self.swap_and_flatten(self.next_observations)
             sampled_next_obs = []
@@ -200,6 +228,8 @@ class EpisodicBuffer(BaseBuffer):
             start = starts[counter % len(starts)]
             end = ends[counter % len(ends)]
 
+            # Start from anywhere in the episode that can give desired length trajectories
+            # if desired_length given.
             effective_start = (
                 np.random.randint(start, end - desired_length + 1)
                 if desired_length
@@ -209,14 +239,22 @@ class EpisodicBuffer(BaseBuffer):
             # TODO: Add any normalization applied in environment if necessary
             effective_end = effective_start + desired_length if desired_length else end
 
-            sampled_obs.append(observations[effective_start:effective_end].copy())
+            sampled_obs.append(
+                self.normalize_obs(
+                    observations[effective_start:effective_end].copy(), env=env
+                )
+            )
             sampled_actions.append(actions[effective_start:effective_end].copy())
             sampled_rewards.append(rewards[effective_start:effective_end].copy())
             sampled_dones.append(dones[effective_start:effective_end].copy())
 
             if not self.optimize_memory_usage:
-                sampled_next_obs.append(next_observations[effective_start:effective_end].copy())
-            
+                sampled_next_obs.append(
+                    self.normalize_obs(
+                        next_observations[effective_start:effective_end].copy(), env=env
+                    )
+                )
+
             # Increment the counter
             counter += 1
 
@@ -233,9 +271,87 @@ class EpisodicBuffer(BaseBuffer):
                 sampled_next_obs = self.to_torch(np.array(sampled_next_obs))
 
         return EpisodicBufferSamples(
-            observations=sampled_obs, 
-            next_observations=sampled_next_obs if not self.optimize_memory_usage else None, 
-            actions=sampled_actions, 
-            rewards=sampled_rewards, 
-            dones=sampled_dones
+            observations=sampled_obs,
+            next_observations=sampled_next_obs
+            if not self.optimize_memory_usage
+            else None,
+            actions=sampled_actions,
+            rewards=sampled_rewards,
+            dones=sampled_dones,
         )
+
+    def get_last_episode(
+        self,
+        env: RMVNormalizeVecObservation | gym.Env | None = None,
+    ):
+        """
+        Retrieves the last episode for each environment in the buffer.
+
+        Args: 
+            env: Optional environment for observation normalization.
+
+        Returns:
+            An EpisodicBufferSamples object containing the last episodes.
+        """
+        observations = []
+        next_observations = []
+        actions = []
+        rewards = []
+        dones = []
+
+        for env_no in range(self.n_envs):
+            # Compute start of progressing episode
+            dones_indices = np.flatnonzero(self.dones[: self.pos, env_no])
+            # We account for starting episode in flattened buffer
+            if len(dones_indices) == 0 or dones_indices[0] != 0:
+                dones_indices = np.hstack((np.array([-1]), dones_indices))
+    
+            start_last_ep = dones_indices[-1] + 1 if len(dones_indices) else 0
+
+            # TODO: What happens if the last entry in the buffer was a done transitions ?
+            observations.append(
+                self.normalize_obs(
+                    self.observations[start_last_ep : self.pos, env_no], env=env
+                )
+            )
+            actions.append(self.actions[start_last_ep : self.pos, env_no])
+            rewards.append(self.rewards[start_last_ep : self.pos, env_no])
+            dones.append(self.dones[start_last_ep : self.pos, env_no])
+
+            if not self.optimize_memory_usage:
+                next_observations.append(
+                    self.next_observations[start_last_ep : self.pos, env_no]
+                )
+
+        return EpisodicBufferSamples(
+            observations=observations,
+            next_observations=next_observations
+            if not self.optimize_memory_usage
+            else None,
+            actions=actions,
+            rewards=rewards,
+            dones=dones,
+        )
+
+    def normalize_obs(
+        self, obs: np.ndarray, env: RMVNormalizeVecObservation | gym.Env | None = None
+    ):
+        """The environment that is wrapped by RMVNormalizeVecObservation and
+        is not scaling observations while sampling from environment will be
+        then normalized during sampling from buffer.
+
+        Args:
+            obs (_type_): _description_
+                shape: (seq_len, obs_dim)
+            env (RMVNormalizeVecObservation | gym.Env | None): If None, no scaling is done.
+
+        Returns:
+            np.ndarray: Normalized observations.
+        """
+        # TODO: Observations here is for a sequence of time steps.
+        if (
+            isinstance(env, RMVNormalizeVecObservation)
+            and not env.is_observation_scaling
+        ):
+            return env.normalize_observations(obs)
+        return obs

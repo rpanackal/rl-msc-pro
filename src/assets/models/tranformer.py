@@ -38,7 +38,6 @@ class DecoderBlock(nn.Module):
         attn_output = self.self_attn(x, x, x, tgt_mask)
         x = self.norm1(x + self.dropout(attn_output))
 
-        # ? should the encoder output be unpacked ?
         attn_output = self.cross_attn(x, enc_output, enc_output, src_mask)
         x = self.norm2(x + self.dropout(attn_output))
 
@@ -58,10 +57,7 @@ class Transformer(nn.Module):
         hidden_dim,
         max_seq_length,
         dropout,
-        *args,
-        **kwargs
     ) -> None:
-        super().__init__(*args, **kwargs)
 
         self.encoder_embedding = nn.Embedding(src_vocab_size, embed_dim)
         self.decoder_embedding = nn.Embedding(tgt_vocab_size, embed_dim)
@@ -130,7 +126,7 @@ class Transformer(nn.Module):
         tgt_mask = (tgt != 0).unsqueeze(1).unsqueeze(3)
 
         seq_length = tgt.size(1)
-        nopeak_mask = torch.tril(torch.ones((seq_length, seq_length))).bool()
+        nopeak_mask = torch.tril(torch.ones((seq_length, seq_length))).to(torch.bool)
 
         tgt_mask = tgt_mask & nopeak_mask
 

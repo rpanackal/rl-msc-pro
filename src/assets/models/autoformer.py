@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import math
+import torch.nn.functional as F
 
 from ..layers import (
     AutoCorrelation,
@@ -331,14 +332,16 @@ class Decoder(nn.Module):
             bias=False,
         )
 
-    def forward(self, seasonal_init, trend_init, enc_output, cross_mask=None, tgt_mask=None):
+    def forward(
+        self, seasonal_init, trend_init, enc_output, cross_mask=None, tgt_mask=None
+    ):
         """_summary_
 
         Args:
-            x_seasonal (_type_): _description_
+            seasonal_init (_type_): _description_
                 shape: (batch_size, pefex_length + tgt_seq_length, embed_dim)
-            x_trend (_type_): _description_
-                shape: (batch_size, prefix_length + tgt_seq_length, embed_dim)
+            trend_init (_type_): _description_
+                shape: (batch_size, prefix_length + tgt_seq_length, src_feat_dim)
             enc_output (_type_): _description_
                 shape: (batch_size, src_seq_length, embed_dim)
             cross_mask (_type_, optional): _description_. Defaults to None.
@@ -381,6 +384,7 @@ class Autoformer(nn.Module):
         tgt_seq_length: int,
         cond_prefix_frac: float,
         dropout: float,
+        full_output: bool =  False,
         *args,
         **kwargs
     ) -> None:
@@ -405,6 +409,8 @@ class Autoformer(nn.Module):
                 as a conditional prefix for the decoder input, influencing the target
                 prediction.
             dropout (float): _description_
+            full_output (bool, optional): Whether to output encoder's results.
+                Defaults to False.
         """
         super().__init__(*args, **kwargs)
 
@@ -417,7 +423,8 @@ class Autoformer(nn.Module):
         self.embed_dim = embed_dim
         self.src_seq_length = src_seq_length
         self.tgt_seq_length = tgt_seq_length
-
+        self.full_output = full_output
+        
         self.enc_embedding = ContinuousEmbedding(
             feat_dim=src_feat_dim, embed_dim=embed_dim
         )
@@ -455,6 +462,7 @@ class Autoformer(nn.Module):
     def forward(
         self,
         x_enc: torch.FloatTensor,
+        x_dec: torch.FloatTensor | None = None,
         src_mask=None,
         cross_mask=None,
         tgt_mask=None,
@@ -464,12 +472,17 @@ class Autoformer(nn.Module):
         """_summary_
 
         Args:
-            x_enc (torch.FloatTensor): _description_
-                shape: (batch_size, src_seq_length, feat_dim)
+            x_enc (torch.FloatTensor): Input source sequence to encoder in feature space.
+                shape: (batch_size, src_seq_length, src_feat_dim)
+            x_dec (torch.FloatTensor | None): Conditioning input to decoder. Added to seasonal
+                initalizaiton along the target sequence length. The feature dimension needs
+                to be less than src_feat_dim.
+                shape: (batch_size, tgt_seq_length, some_dim)
             src_mask (_type_, optional): _description_. Defaults to None.
             cross_mask (_type_, optional): _description_. Defaults to None.
             tgt_mask (_type_, optional): _description_. Defaults to None.
-            full_output (bool, optional): Whether to output encoder's results. Defaults to False.
+            full_output (bool, optional): Whether to output encoder's results.
+                Defaults to False.
             enc_only (bool, optional): Whether to use encoder only. Defaults to False.
 
         Returns:
@@ -480,8 +493,7 @@ class Autoformer(nn.Module):
                 1: (torch.FloatTensor): The encoder's output
                     shape: (batch_size, src_seq_length, embed_dim)
         """
-        # initilialization section
-        seasonal_init, trend_init = self.decoder_initializer(x_enc)
+        full_output = full_output or self.full_output
 
         # encoder section
         enc_output = self.encoder(
@@ -491,10 +503,13 @@ class Autoformer(nn.Module):
         if enc_only:
             return enc_output
 
+        # decoder initilialization section
+        seasonal_init, trend_init = self.decoder_initializer(x_enc, x_dec)
+
         # decoder section
         seasonal_out, trend_out = self.decoder(
-            x_seasonal=self.positional_encoding(self.dec_embedding(seasonal_init)),
-            x_trend=trend_init,
+            seasonal_init=self.positional_encoding(self.dec_embedding(seasonal_init)),
+            trend_init=trend_init,
             enc_output=enc_output,
             cross_mask=cross_mask,
             tgt_mask=tgt_mask,
@@ -510,31 +525,56 @@ class Autoformer(nn.Module):
 
         return dec_output
 
-    def decoder_initializer(self, x_enc):
+    def decoder_initializer(self, x_enc, x_dec=None):
         """_summary_
 
         Args:
-            x_enc (_type_):
-                shape: (batch_size, src_seq_length, feat_dim)
+            x_enc (torch.FloatTensor): Input source sequence to encoder in feature space.
+                shape: (batch_size, src_seq_length, src_feat_dim)
+            x_dec (torch.FloatTensor): Conditioning input to decoder. Added to seasonal initalizaiton
+                along the target sequence length. The feature dimension needs to be less than src_feat_dim.
+                shape: (batch_size, tgt_seq_length, some_dim)
         Returns:
             tuple[Tensor, 2]
                 0: (_type_): The seasonal initialization
-                    shape: (batch_size, pefex_length + tgt_seq_length, embed_dim)
+                    shape: (batch_size, prefix_length + tgt_seq_length, src_feat_dim)
                 1: (_type_): The trend initialization.
-                    shape: (batch_size, prefix_length + tgt_seq_length, embed_dim)
+                    shape: (batch_size, prefix_length + tgt_seq_length, src_feat_dim)
         """
 
         batch_size = x_enc.size(0)
 
+        # When x_dec is None, conditional is simply zeroes
+        if x_dec is not None:
+            assert x_dec.shape[0:2] == (batch_size, self.tgt_seq_length), ValueError(
+                "Conditioning input needs to match batch_size and tgt_seq_length."
+            )
+            assert x_dec.size(-1) <= self.src_feat_dim, ValueError(
+                "Conditioning input feat_dim can be atmost src_feat_dim."
+            )
+
+            # Pad x_dec with zeroes to match src_feat_dim
+            padding_needed = self.src_feat_dim - x_dec.size(-1)
+            if padding_needed:
+                conditional = F.pad(x_dec, (padding_needed, 0), "constant", 0).to(
+                    x_enc.device
+                )
+            else:
+                conditional = x_dec
+        else:
+            conditional = torch.zeros(
+                [batch_size, self.tgt_seq_length, self.src_feat_dim],
+                device=x_enc.device,
+            )
+
         mean = torch.mean(x_enc, dim=1, keepdim=True).repeat(1, self.tgt_seq_length, 1)
-        zeros = torch.zeros(
-            [batch_size, self.tgt_seq_length, self.src_feat_dim], device=x_enc.device
-        )
+
         seasonal_init, trend_init = self.series_decomp(x_enc)
 
         seasonal_init = torch.cat(
-            [seasonal_init[:, -self.prefix_length :, :], zeros], dim=1
+            [seasonal_init[:, -self.prefix_length :, :], conditional], dim=1
         )
+
         trend_init = torch.cat([trend_init[:, -self.prefix_length :, :], mean], dim=1)
 
         return seasonal_init, trend_init

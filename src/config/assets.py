@@ -18,3 +18,8 @@ class AutoformerConfig(ModelConfig):
     n_dec_blocks: int = 1
     n_heads: int =  8
     cond_prefix_frac: float = 0.3
+    src_seq_length: int = 50
+    tgt_seq_length: int = 50
+
+class VariationalAutoformerConfig(AutoformerConfig):
+    name: str = "variational-autoformer"

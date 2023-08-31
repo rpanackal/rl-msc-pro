@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, SerializeAsAny
 from pydantic_settings import BaseSettings
 import torch
 from pathlib import PurePath
@@ -8,10 +8,10 @@ class SchedulerConfig(BaseModel):
 
 class CosineAnnealingLRConfig(SchedulerConfig):
     name: str = "cosine annealing"
-    min_lr: float = 0.005
+    min_lr: float = 0.001
 
 class OptimizerConfig(BaseModel):
     name: str = ""
     lr: float = 0.5
 
-    scheduler: SchedulerConfig | None = None
+    scheduler: SerializeAsAny[SchedulerConfig] | None = None
