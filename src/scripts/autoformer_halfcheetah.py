@@ -27,11 +27,14 @@ def main():
     # Configure experiment
     config = SupervisedLearnerConfig(
         n_epochs=15,
-        model=AutoformerConfig(),
+        model=AutoformerConfig(embed_dim=128, n_enc_blocks=2, n_dec_blocks=1),
         dataset=D4RLDatasetConfig(env_id="halfcheetah-medium-v2"),
         dataloader=DataLoaderConfig(),
-        optimizer=OptimizerConfig(scheduler=CosineAnnealingLRConfig()),
+        optimizer=OptimizerConfig(
+            lr=0.001, scheduler=CosineAnnealingLRConfig(min_lr=0.0001)),
     )
+    current_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    config.name = f"{config.dataset.name}_{config.model.name}_{current_datetime}"
 
     # Create Gym environment
     env = gym.make(config.dataset.name)
@@ -44,6 +47,8 @@ def main():
         source_ratio=config.dataset.source_ratio,
         transform=transform,
         split_length=config.dataset.split_length,
+        src_features_keys=["observations", "actions"],
+        tgt_features_keys=["observations"],
     )
 
     train_dataset, valid_dataset, test_dataset = random_split(
@@ -55,7 +60,7 @@ def main():
         ],
     )
 
-    source, target = train_dataset[0]
+    source, target, _ = train_dataset[0]
     src_seq_length, src_feat_dim = source.size()
     tgt_seq_length, tgt_feat_dim = target.size()
 
@@ -102,9 +107,7 @@ def main():
     )
 
     # Setup trial logging
-    current_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    trial_name = f"{config.dataset.name}_{config.model.name}_{current_datetime}"
-    log_dir = config.checkpoint_dir / trial_name
+    log_dir = config.checkpoint_dir / config.name
     writer = SummaryWriter(log_dir=log_dir)
 
     # Define learner
@@ -117,6 +120,8 @@ def main():
         lr_scheduler=lr_scheduler,
         config=config,
         writer=writer,
+        custom_to_model=custom_to_model,
+        custom_to_criterion=custom_to_criterion
     )
 
     # Training
@@ -131,12 +136,32 @@ def main():
         criterion=criterion,
         config=config,
         writer=writer,
+        custom_to_model=custom_to_model,
+        custom_to_criterion=custom_to_criterion
     )
     evaluator.test()
 
     env.close()
     writer.close()
 
+def custom_to_model(learner, batch):
+    source, _, extras = batch
+
+    args = []
+    kwargs = {
+        'x_enc': source.to(learner.device),
+        'x_dec': extras["actions"].to(learner.device)
+    }
+
+    return args, kwargs
+
+def custom_to_criterion(learner, batch, output):
+    _, target, _ = batch
+
+    args = [output, target.to(learner.device)]
+    kwargs = {}
+
+    return args, kwargs
 
 if __name__ == "__main__":
     main()
