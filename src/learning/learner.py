@@ -71,7 +71,10 @@ class SupervisedLearner:
                 1: loss computed for batch
         """
         self._train_iter += 1
-
+        
+        if not self.model.training:  # Checks if the model is in training mode
+            self.model.train()
+    
         # resets the gradients after every batch
         self.optimizer.zero_grad()
 
@@ -159,11 +162,10 @@ class SupervisedLearner:
         """
         self._valid_iter += 1
 
-        args, kwargs = self.to_model(batch)
-
         if self.model.training:  # Checks if the model is in training mode
             self.model.eval()
 
+        args, kwargs = self.to_model(batch)
         # deactivates autograd
         with torch.no_grad():
             output = self.model(*args, **kwargs)

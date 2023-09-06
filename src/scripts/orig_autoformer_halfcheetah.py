@@ -8,45 +8,41 @@ from torch.utils.data import DataLoader, random_split
 from datetime import datetime
 import gym
 
-from ..assets import Autoformer
 from ..config import (
+    OrigAutoformerConfig,
     AutoformerConfig,
     D4RLDatasetConfig,
     SupervisedLearnerConfig,
     OptimizerConfig,
     CosineAnnealingLRConfig,
-    DataLoaderConfig
+    DataLoaderConfig,
 )
 from ..data.dataset import D4RLSequenceDataset
 from ..learning import SupervisedLearner, SupervisedEvaluator
 from ..transforms import RandomCropSequence
 from torch.utils.tensorboard import SummaryWriter
+from ..external.Autoformer.models.Autoformer import Model as Autoformer
 
 
 def main():
     # Configure experiment
-    config = SupervisedLearnerConfig(
-        n_epochs=15,
-        model=AutoformerConfig(embed_dim=16, n_enc_blocks=2, n_dec_blocks=1, corr_factor=3),
-        dataset=D4RLDatasetConfig(env_id="halfcheetah-expert-v2", split_length=10),
-        dataloader=DataLoaderConfig(batch_size=64),
-        optimizer=OptimizerConfig(
-            lr=0.0001, scheduler=CosineAnnealingLRConfig(min_lr=0.00001)),
+    dataset_config = D4RLDatasetConfig(
+        env_id="halfcheetah-expert-v2",
+        split_length=10,
     )
-    current_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    config.name = f"{config.dataset.name}_{config.model.name}_{current_datetime}"
+    dataloader_config = DataLoaderConfig(batch_size=64)
 
     # Create Gym environment
-    env = gym.make(config.dataset.name)
+    env = gym.make(dataset_config.name)
 
     # Handle dataset and dataloaders
     # transform = transforms.Compose([RandomCropSequence(config.dataset.crop_length)])
     transform = None
     dataset = D4RLSequenceDataset(
         env=env,
-        source_ratio=config.dataset.source_ratio,
+        source_ratio=dataset_config.source_ratio,
         transform=transform,
-        split_length=config.dataset.split_length,
+        split_length=dataset_config.split_length,
         src_features_keys=["observations", "actions"],
         tgt_features_keys=["observations"],
         do_normalize=False,
@@ -55,15 +51,38 @@ def main():
     train_dataset, valid_dataset, test_dataset = random_split(
         dataset,
         [
-            1 - config.dataset.validation_ratio - config.dataset.test_ratio,
-            config.dataset.validation_ratio,
-            config.dataset.test_ratio,
+            1 - dataset_config.validation_ratio - dataset_config.test_ratio,
+            dataset_config.validation_ratio,
+            dataset_config.test_ratio,
         ],
     )
 
-    source, target, _ = train_dataset[0]
-    config.model.src_seq_length, src_feat_dim = source.size()
-    config.model.tgt_seq_length, tgt_feat_dim = target.size()
+    source, target, extras = train_dataset[0]
+    src_seq_length, src_feat_dim = source.size()
+    tgt_seq_length, tgt_feat_dim = target.size()
+
+    config = SupervisedLearnerConfig(
+        n_epochs=15,
+        model=OrigAutoformerConfig(
+            factor=3,
+            d_model=16,
+            enc_in=src_feat_dim,
+            dec_in=src_feat_dim,
+            c_out=tgt_feat_dim,
+            seq_len=src_seq_length,
+            label_len=int(src_seq_length * 0.3),
+            pred_len=tgt_seq_length,
+            d_ff=16*2
+        ),
+        dataset=dataset_config,
+        dataloader=dataloader_config,
+        optimizer=OptimizerConfig(
+            lr=0.0001, scheduler=CosineAnnealingLRConfig(min_lr=0.00001)
+        ),
+    )
+
+    current_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    config.name = f"{config.dataset.name}_{config.model.name}_{current_datetime}"
 
     train_loader = DataLoader(
         train_dataset,
@@ -82,32 +101,17 @@ def main():
     )
 
     # Define Model
-    model = Autoformer(
-        src_feat_dim=src_feat_dim,
-        tgt_feat_dim=tgt_feat_dim,
-        embed_dim=config.model.embed_dim,
-        expanse_dim=config.model.expanse_dim,
-        kernel_size=config.model.kernel_size,
-        corr_factor=config.model.corr_factor,
-        n_enc_blocks=config.model.n_enc_blocks,
-        n_dec_blocks=config.model.n_dec_blocks,
-        n_heads=config.model.n_heads,
-        src_seq_length=config.model.src_seq_length,
-        tgt_seq_length=config.model.tgt_seq_length,
-        cond_prefix_frac=config.model.cond_prefix_frac,
-        dropout=config.model.dropout,
-    ).to(config.device)
+    model = Autoformer(configs=config.model).to(config.device)
 
     # Define optimizer and criteria
     criterion = nn.MSELoss()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=config.optimizer.lr)
+    optimizer = torch.optim.Adam(model.parameters(), lr=config.optimizer.lr)
 
     max_iter = config.n_epochs * (len(train_dataset) / config.dataloader.batch_size)
     lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, eta_min=config.optimizer.scheduler.min_lr, T_max=max_iter
     )
 
-    # Setup trial logging
     log_dir = config.checkpoint_dir / config.name
     writer = SummaryWriter(log_dir=log_dir)
 
@@ -122,7 +126,7 @@ def main():
         config=config,
         writer=writer,
         custom_to_model=custom_to_model,
-        custom_to_criterion=custom_to_criterion
+        custom_to_criterion=custom_to_criterion,
     )
 
     # Training
@@ -138,23 +142,26 @@ def main():
         config=config,
         writer=writer,
         custom_to_model=custom_to_model,
-        custom_to_criterion=custom_to_criterion
+        custom_to_criterion=custom_to_criterion,
     )
     evaluator.test()
 
     env.close()
     writer.close()
 
+
 def custom_to_model(learner, batch):
-    source, _, extras = batch
+    source, target, extras = batch
 
     args = []
     kwargs = {
-        'x_enc': source.to(learner.device),
-        'x_dec': extras["actions"].to(learner.device)
+        "x_enc": source.to(learner.device),
+        "x_dec": extras["actions"].to(learner.device)
+        # "x_dec": target.to(learner.device),
     }
 
     return args, kwargs
+
 
 def custom_to_criterion(learner, batch, output):
     _, target, _ = batch
@@ -163,6 +170,7 @@ def custom_to_criterion(learner, batch, output):
     kwargs = {}
 
     return args, kwargs
+
 
 if __name__ == "__main__":
     main()

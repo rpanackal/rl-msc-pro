@@ -95,7 +95,7 @@ class CoreticAgent(GenericAgent):
         policy_frequency: int,
         target_network_frequency: int,
         tau: float,
-        trajectory_length: int | None = None,
+        state_seq_length: int | None = None,
     ):
         """
         Initialize a single training run. Sets up essential hyperparameters and configurations.
@@ -110,11 +110,11 @@ class CoreticAgent(GenericAgent):
             policy_frequency (int): Frequency with which to update the policy network.
             target_network_frequency (int): Frequency with which to update the target network.
             tau (float): Soft update factor.
-            trajectory_length (int | None): Desired length of trajectory samples from episodic replay
-                buffer.
+            state_seq_length (int | None): The length of state sequences produced by representation
+                model for critic update. Directly impact training time.
 
         Raises:
-            ValueError: If `trajectory_length` is too small for the given source and target lengths.
+            ValueError: If `state_seq_length` is too small for critic update.
         """
 
         self.autotune = autotune
@@ -144,20 +144,14 @@ class CoreticAgent(GenericAgent):
         self.target_network_frequency = target_network_frequency
         self.tau = tau
 
-        # Set the trajectory length, falling back to the sum of source and target lengths if
-        # not specified
-        self.trajectory_length = (
-            trajectory_length
-            if trajectory_length
-            else self.src_seq_length + self.tgt_seq_length
+        assert state_seq_length >= 2, ValueError(
+            f"State sequence length ({state_seq_length}) too small for critic update. \
+            Minimum allowed value is 2"
         )
+        self.state_seq_length = state_seq_length
 
-        assert (
-            self.trajectory_length >= self.src_seq_length + self.tgt_seq_length
-        ), ValueError(
-            f"Trajectory length({trajectory_length}) too small to for given source length ({trajectory_length})\
-            and target length ({trajectory_length})"
-        )
+        # Minimum length of trajectory sampled from replay buffer
+        self.min_trajectory_length = self.src_seq_length + self.tgt_seq_length
 
         # Initialize the global step counter
         self.global_step = 0
@@ -242,18 +236,20 @@ class CoreticAgent(GenericAgent):
 
         with Timer("timer/rb_sampling/repr_critic", self.global_step, self.writer):
             # Sample a batch of random episodes/trajectories from episodic replay buffer
-            samples = self.replay_buffer.sample(self.batch_size, self.trajectory_length)
+            samples = self.replay_buffer.sample(
+                self.batch_size, self.min_trajectory_length
+            )
             # self.get_states(samples)
 
-        if torch.isnan(samples.observations).any():
-            print("Invalid observation sampled from replay buffer: NaNs found!")
-        if torch.isinf(samples.observations).any():
-            print("Invalid observation sampled from replay buffer: Infs found!")
+        # if torch.isnan(samples.observations).any():
+        #     print("Invalid observation sampled from replay buffer: NaNs found!")
+        # if torch.isinf(samples.observations).any():
+        #     print("Invalid observation sampled from replay buffer: Infs found!")
 
         # Update Represenation Model
         # This will provide a compact state representation for each observation
         with Timer("timer/update/repr_model", self.global_step, self.writer):
-            state_sequences = self.update_repr_model(samples)
+            state_sequences = self.update_repr_model_v2(samples)
 
         with Timer("timer/update/critic", self.global_step, self.writer):
             # Update the Critic network
@@ -265,7 +261,74 @@ class CoreticAgent(GenericAgent):
             # Sample a batch of random episodes/trajectories from episodic replay buffer
             with Timer("timer/rb_sampling/actor", self.global_step, self.writer):
                 samples = self.replay_buffer.sample(
-                    self.batch_size, self.trajectory_length
+                    self.batch_size, self.min_trajectory_length
+                )
+            # with Timer("timer/get_states/actor", self.global_step, self.writer):
+            #     state_sequences = self.get_state_sequences(samples)
+            with Timer("timer/update/actor", self.global_step, self.writer):
+                self.update_actor_v2(samples)
+
+        # Update the Target Networks
+        # Only update the target networks periodically, as defined by target_network_frequency
+        if self.global_step % self.target_network_frequency == 0:
+            with Timer("timer/update_target", self.global_step, self.writer):
+                self.update_target_networks()
+
+    def update_agent_v2(self, experience):
+        """
+        Update the agent's models (e.g., Representation model, Q-networks, policy, value function)
+            based on episodic experience.
+
+        Args:
+            experience: A tuple containing one timestep's worth of data,
+                usually (obs, next_obs, actions, rewards, dones, infos).
+
+        Steps involved:
+            1. Add experience to the episodic replay buffer.
+            2. If enough samples are gathered, perform updates:
+                - Sample random episodes from the episodic replay buffer.
+                - Update representation model to get latent state sequences.
+                - Update critic network based on these latent states and other experience.
+                - Periodically update the actor and target networks.
+
+        Note: Unlike traditional replay buffers, this uses an episodic replay buffer that
+        samples entire episodes for training.
+        """
+        # Add new experience to the episodic replay buffer
+        # Assuming experience is a tuple: (obs, real_next_obs, actions, rewards, dones, infos)
+        self.replay_buffer.add(*experience)
+
+        if self.global_step < self.learning_starts:
+            return
+
+        with Timer("timer/rb_sampling/repr_critic", self.global_step, self.writer):
+            # Sample a batch of random episodes/trajectories from episodic replay buffer
+            samples = self.replay_buffer.sample(
+                self.batch_size, self.min_trajectory_length + 1
+            )
+            # self.get_states(samples)
+
+        # if torch.isnan(samples.observations).any():
+        #     print("Invalid observation sampled from replay buffer: NaNs found!")
+        # if torch.isinf(samples.observations).any():
+        #     print("Invalid observation sampled from replay buffer: Infs found!")
+
+        # Update Represenation Model
+        # This will provide a compact state representation for each observation
+        with Timer("timer/update/repr_model", self.global_step, self.writer):
+            states = self.update_repr_model_v2(samples)
+
+        with Timer("timer/update/critic", self.global_step, self.writer):
+            # Update the Critic network
+            self.update_critic_v2(samples, states)
+
+        # Update the Actor network
+        # Only update the actor network periodically, as defined by policy_frequency
+        if self.global_step % self.policy_frequency == 0:
+            # Sample a batch of random episodes/trajectories from episodic replay buffer
+            with Timer("timer/rb_sampling/actor", self.global_step, self.writer):
+                samples = self.replay_buffer.sample(
+                    self.batch_size, self.min_trajectory_length
                 )
             # with Timer("timer/get_states/actor", self.global_step, self.writer):
             #     state_sequences = self.get_state_sequences(samples)
@@ -284,7 +347,7 @@ class CoreticAgent(GenericAgent):
         # samples (batch_size, trajectory_length, feat_dim)
 
         # The time index upto which there exist a tgt sequence for src
-        src_limit = self.trajectory_length - self.tgt_seq_length
+        src_limit = self.min_trajectory_length - self.tgt_seq_length
 
         # 1. Construct source
         zeroes = torch.zeros(
@@ -357,7 +420,7 @@ class CoreticAgent(GenericAgent):
                 shape: (batch_size, state_seq_len, repr_dim).
         """
         # Calculate the number of subsequences as source to produce states per trajectory
-        state_seq_len = self.trajectory_length - self.tgt_seq_length
+        state_seq_len = self.min_trajectory_length - self.tgt_seq_length
 
         # 1. Construct source for all state_seq_len time steps
         # Padd zeros to the left of sequences.
@@ -398,7 +461,7 @@ class CoreticAgent(GenericAgent):
             sources = source_sequences[:, t : t + self.src_seq_length, :]
             # During online interaction, actions are sampled and not available for state calculation
             # for corresponding time step
-            sources[:, -1, -self.action_dim] = 0
+            sources[:, -1, -self.action_dim :] = 0
 
             target = targets[:, t : t + self.tgt_seq_length, :]
             conditional = conditionals[:, t : t + self.tgt_seq_length, :]
@@ -415,7 +478,193 @@ class CoreticAgent(GenericAgent):
             # 5. Compute representation model loss
             # mse_loss = F.mse_loss(predictions, target)
             kl_weight = 0.8
-            mse_loss = F.mse_loss(dec_output, target, reduction="sum")
+            mse_loss = F.mse_loss(dec_output, target)
+            kl_loss = -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp())
+            total_loss = mse_loss + kl_weight * kl_loss
+
+            # 6. Perform backpropagation to update the representation learning model.
+            self.repr_optimizer.zero_grad()
+            total_loss.backward()
+            self.repr_optimizer.step()
+        # ? Should padding be done on target to get state sequence for all observations?
+        return state_sequences.detach()
+
+    def update_repr_model_v2(self, samples: EpisodicBufferSamples):
+        """
+        V2: Only for one state and incompatibe with critic update!
+
+        Updates the state representation learning model using the provided batch of
+        experience.
+
+        Args:
+            samples (EpisodicBufferSamples):  The batch of experience sequences sampled
+                from the replay buffer. Each sequence contains observations, actions, rewards,
+                and done flags.
+
+        Returns:
+            state_sequences (torch.Tensor): The state representation used for critic
+                and actor updates.
+                shape: (batch_size, state_seq_len, repr_dim).
+        """
+        # TODO: trajectory length is always going to be src_seq_lenght + tgt_seq_length
+        # Calculate the highest time step from which there exist a target sequence in trajectory.
+        max_tgt_start = self.min_trajectory_length - self.tgt_seq_length
+
+        # Calculate the starting index (inclusive) of target in trajectory
+        # With a probability eta sample a random time step from 0..source_bound-1
+        eta = 0.01
+        tgt_start = (
+            torch.randint(0, max_tgt_start + 1, (1,)).item()
+            if torch.rand(1).item() < eta
+            else (max_tgt_start)
+        )
+
+        # Calculate the starting index (inclusive) of sources in trajectory
+        src_start = (
+            tgt_start - self.src_seq_length
+            if tgt_start - self.src_seq_length >= 0
+            else 0
+        )
+
+        # 2. Construct sources by concatenating observations and actions.
+        sources = torch.cat(
+            [
+                samples.observations[:, src_start:tgt_start, :],
+                samples.actions[:, src_start:tgt_start, :],
+            ],
+            dim=2,
+        )
+
+        # Pad zeros to the left of source if needed.
+        padding_needed = self.src_seq_length - sources.size(1)
+        if padding_needed:
+            x = F.pad(sources, (0, 0, padding_needed, 0), "constant", 0)
+
+        # 2. Construct targets and conditionals.
+        targets = samples.observations[
+            :, tgt_start : tgt_start + self.tgt_seq_length, :
+        ]
+        conditionals = samples.actions[
+            :, tgt_start : tgt_start + self.tgt_seq_length, :
+        ]
+
+        # During online interaction, actions are sampled and not available for state
+        # calculation for latest time step
+        sources[:, -1, -self.action_dim :] = 0
+
+        # 3. Produce state representations and future observations
+        dec_output, enc_output, mean, logvar, _ = self.repr_model(
+            sources, x_dec=conditionals, full_output=True
+        )
+
+        # 4. Compute representation model loss
+        kl_weight = 0.8
+        mse_loss = F.mse_loss(dec_output, targets)
+        kl_loss = -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp())
+        total_loss = mse_loss + kl_weight * kl_loss
+
+        # 5. Perform backpropagation to update the representation learning model.
+        self.repr_optimizer.zero_grad()
+        total_loss.backward()
+        self.repr_optimizer.step()
+
+        # 6. Get states from representation model
+        states = enc_output[:, -1, :]
+
+        # ? Should padding be done on target to get state sequence for all observations?
+        return states.detach()
+
+    def update_repr_model_v3(self, samples: EpisodicBufferSamples):
+        """
+        V3: Get a pair of consequtive states.
+
+        Updates the state representation learning model using the provided batch of
+        experience.
+
+        Args:
+            samples (EpisodicBufferSamples):  The batch of experience sequences sampled
+                from the replay buffer. Each sequence contains observations, actions, rewards,
+                and done flags.
+
+        Returns:
+            state_sequences (torch.Tensor): The state representation used for critic
+                and actor updates.
+                shape: (batch_size, state_seq_len, repr_dim).
+        """
+        # Calculate the highest time step from which there exist a target sequence in trajectory.
+        # We subtract one to make sure there always exist a follow up target sequence.
+        # The index at which target sequences start
+        tgt_seq_start_idx = self.min_trajectory_length - self.tgt_seq_length
+
+        # Calculate the starting index (inclusive) of target in trajectory
+        # With a probability eta sample a random time step from 0..source_bound-1
+        eta = 0.01
+        tgt_start = (
+            torch.randint(0, max_tgt_start + 1, (1,)).item()
+            if torch.rand(1).item() < eta
+            else (max_tgt_start)
+        )
+
+        # Calculate the number of subsequences as source to produce states per trajectory
+        state_seq_len = samples.observations.size(1) - self.tgt_seq_length
+
+        # 1. Construct source for all state_seq_len time steps
+        # Padd zeros to the left of sequences.
+        zeroes = torch.zeros(
+            (
+                self.batch_size,
+                self.src_seq_length - 1,
+                self.observation_dim + self.action_dim,
+            )
+        ).to(self.device)
+        source_sequences = torch.cat(
+            [
+                zeroes,
+                # Concatenate actions and observations along feat_dim
+                torch.cat(
+                    [
+                        samples.observations[:, :state_seq_len, :],
+                        samples.actions[:, :state_seq_len, :],
+                    ],
+                    dim=2,
+                ),
+            ],
+            dim=1,
+        )
+
+        # 2. Construct target for all state_seq_len time steps
+        target_sequences = samples.observations[:, 1:, :]
+        conditionals = samples.actions[:, 1:, :]
+
+        # Buffer for states
+        state_sequences = torch.empty(
+            (self.batch_size, state_seq_len, self.repr_dim)
+        ).to(self.device)
+
+        # Loop over each potential starting point for the source sequence within a trajectory.
+        for t in range(state_seq_len):
+            # Get source, target and conditional for current time step
+            sources = source_sequences[:, t : t + self.src_seq_length, :]
+            # During online interaction, actions are sampled and not available for state calculation
+            # for corresponding time step
+            sources[:, -1, -self.action_dim :] = 0
+
+            target = target_sequences[:, t : t + self.tgt_seq_length, :]
+            conditional = conditionals[:, t : t + self.tgt_seq_length, :]
+
+            # 3. Produce state representations and future observations
+            dec_output, enc_output, mean, logvar, _ = self.repr_model(
+                sources, x_dec=conditional, full_output=True
+            )
+
+            # 4. Store final element along sequence dimension of latent mean as the state s_t,
+            # given obs o_t.
+            state_sequences[:, t, :] = enc_output[:, -1, :]
+
+            # 5. Compute representation model loss
+            # mse_loss = F.mse_loss(predictions, target)
+            kl_weight = 0.8
+            mse_loss = F.mse_loss(dec_output, target)
             kl_loss = -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp())
             total_loss = mse_loss + kl_weight * kl_loss
 
@@ -428,7 +677,7 @@ class CoreticAgent(GenericAgent):
 
     def get_state_sequences(self, samples: EpisodicBufferSamples):
         # Calculate the number of subsequences as source to produce states per trajectory
-        state_seq_len = self.trajectory_length - self.tgt_seq_length
+        state_seq_len = self.min_trajectory_length - self.tgt_seq_length
 
         # 1. Construct source for all state_seq_len time steps
         # Padd zeros to the left of sequences.
@@ -554,6 +803,73 @@ class CoreticAgent(GenericAgent):
                 "losses/qf_loss", qf_loss.item() / 2.0, self.global_step
             )
 
+    def update_critic_v2(self, samples: EpisodicBufferSamples, state_sequences):
+        """
+        Updates the critic network using the given samples and state sequences.
+
+        Args:
+            samples (EpisodicBufferSamples): The batch of experience sequences sampled
+                from the replay buffer. Each sequence contains observations, actions, rewards,
+                and done flags.
+            state_sequences (torch.Tensor): The batch of latent state sequences corresponding
+                to the observations in 'samples'.
+                shape: (batch_size, state_seq_len, repr_dim).
+        """
+
+        # Loop through each time step in the trajectory
+        # Note: We don't have next_states for the last time step in each trajectory,
+        # so we loop until the (n_src_per_batch - 1)th time step.
+        # ? Should loop be replaced with reshape to perform all operations at once?
+        for t in range(state_seq_len - 1):
+            # 1. Get next state sequences
+            next_states = state_sequences[:, t + 1, :]
+
+            with torch.no_grad():
+                # 2. Sample next action and compute Q-value targets
+                next_state_actions, next_state_log_pi, _ = self.sample_action(
+                    next_states
+                )
+                qf1_next_target = self.qf1_target(next_states, next_state_actions)
+                qf2_next_target = self.qf2_target(next_states, next_state_actions)
+
+                # 3. Compute the minimum Q-value target and the target for the Q-function update
+                min_qf_next_target = (
+                    torch.min(qf1_next_target, qf2_next_target)
+                    - self.alpha * next_state_log_pi
+                )
+                next_q_value = samples.rewards[:, t].flatten() + (
+                    1 - samples.dones[:, t].flatten()
+                ) * self.gamma * min_qf_next_target.view(-1)
+
+            # 4. Compute the Q-values and the MSE loss for both critics
+            qf1_a_values = self.qf1(curr_states, samples.actions[:, t, :]).view(-1)
+            qf2_a_values = self.qf2(curr_states, samples.actions[:, t, :]).view(-1)
+            qf1_loss = F.mse_loss(qf1_a_values, next_q_value)
+            qf2_loss = F.mse_loss(qf2_a_values, next_q_value)
+            qf_loss = qf1_loss + qf2_loss
+
+            # Update current states
+            curr_states = next_states
+
+            # 5. Update critic model
+            self.q_optimizer.zero_grad()
+            qf_loss.backward()
+            self.q_optimizer.step()
+
+        # Log Q-function loss information of last state in sequence every log_freq steps.
+        if self.global_step % self.log_freq == 0 and self.writer:
+            self.writer.add_scalar(
+                "losses/qf1_values", qf1_a_values.mean().item(), self.global_step
+            )
+            self.writer.add_scalar(
+                "losses/qf2_values", qf2_a_values.mean().item(), self.global_step
+            )
+            self.writer.add_scalar("losses/qf1_loss", qf1_loss.item(), self.global_step)
+            self.writer.add_scalar("losses/qf2_loss", qf2_loss.item(), self.global_step)
+            self.writer.add_scalar(
+                "losses/qf_loss", qf_loss.item() / 2.0, self.global_step
+            )
+
     def update_actor(self, state_sequences):
         """
         Updates the actor network using the given state sequences.
@@ -613,9 +929,7 @@ class CoreticAgent(GenericAgent):
 
                 # Compute the loss for alpha, aiming to keep policy entropy
                 # close to target_entropy.
-                alpha_loss = (
-                    -self.log_alpha * (log_pi + self.target_entropy)
-                ).mean()
+                alpha_loss = (-self.log_alpha * (log_pi + self.target_entropy)).mean()
 
                 # Perform backpropagation to update alpha.
                 self.alpha_optimizer.zero_grad()
@@ -640,7 +954,9 @@ class CoreticAgent(GenericAgent):
 
     def update_actor_v2(self, samples: EpisodicBufferSamples):
         """
-        Updates the actor network using the given state sequences.
+        V2: states are constructed again
+
+        Updates the actor network using the given samples.
 
         Args:
             samples (EpisodicBufferSamples): The batch of experience sequences sampled
@@ -652,7 +968,7 @@ class CoreticAgent(GenericAgent):
                 in-place.
         """
         # Calculate the number of subsequences as source to produce states per trajectory
-        state_seq_len = self.trajectory_length - self.tgt_seq_length
+        state_seq_len = self.min_trajectory_length - self.tgt_seq_length
 
         # 1. Construct source for all state_seq_len time steps
         # Padd zeros to the left of sequences.
@@ -693,7 +1009,7 @@ class CoreticAgent(GenericAgent):
 
             # targets = target_sequences[:, t : t + self.tgt_seq_length, :]
             # conditionals = conditional_sequences[:, t : t + self.tgt_seq_length, :]
-            sources = sources.detach()
+
             # 3. Produce state representations and future observations
             enc_output, mean, _, _ = self.repr_model(sources, enc_only=True)
 
@@ -741,9 +1057,7 @@ class CoreticAgent(GenericAgent):
 
                 # Compute the loss for alpha, aiming to keep policy entropy
                 # close to target_entropy.
-                alpha_loss = (
-                    -self.log_alpha * (log_pi + self.target_entropy)
-                ).mean()
+                alpha_loss = (-self.log_alpha * (log_pi + self.target_entropy)).mean()
 
                 # Perform backpropagation to update alpha.
                 self.alpha_optimizer.zero_grad()
@@ -779,248 +1093,6 @@ class CoreticAgent(GenericAgent):
             target_param.data.copy_(
                 self.tau * param.data + (1 - self.tau) * target_param.data
             )
-
-    def train(
-        self,
-        total_timesteps: int,
-        batch_size: int,
-        learning_starts: int,
-        alpha: float | None,
-        autotune: bool,
-        gamma: float,
-        policy_frequency: int,
-        target_network_frequency: int,
-        tau: float,
-        trajectory_length: int,
-    ):
-        """
-        Train the Soft Actor-Critic (SAC) agent.
-
-        Args:
-            total_timesteps (int): The total number of timesteps to train the agent for.
-            batch_size (int): The size of each batch of experiences used for training.
-            learning_starts (int): The timestep at which learning should begin.
-            alpha (float | None): The temperature parameter for the SAC algorithm.
-                If None, it will be learned if autotune is True.
-            autotune (bool): Whether to automatically tune the temperature parameter.
-            gamma (float): The discount factor for future rewards.
-            policy_frequency (int): The frequency with which the policy should be updated.
-            target_network_frequency (int): The frequency of updating the target network.
-            tau (float): The soft update coefficient for updating the target network.
-            trajectory_length (int | None): The length of trajectories sampled from episodic
-                replay buffer.
-        """
-        self.initialize(
-            batch_size=batch_size,
-            learning_starts=learning_starts,
-            alpha=alpha,
-            autotune=autotune,
-            gamma=gamma,
-            policy_frequency=policy_frequency,
-            target_network_frequency=target_network_frequency,
-            tau=tau,
-            trajectory_length=trajectory_length,
-        )
-
-        # Start timer
-        start_time = time.time()
-
-        # Reset the environment and get initial observation
-        obs = self.envs.reset()
-        for _ in range(total_timesteps):
-            # Sample actions
-            actions, _, _ = self.sample_action(obs, to_numpy=True)
-
-            # Execute actions in the environment
-            next_obs, rewards, dones, infos = self.envs.step(actions)
-
-            # Prepare experience for the agent's update
-            experience = (obs, next_obs, actions, rewards, dones, infos)
-            experience = self.preprocess_experience(experience)
-
-            # Update the agent
-            self.update_agent(experience)
-
-            # Update the current observation
-            obs = next_obs
-
-            # Log episodic information if available
-            for info in infos:
-                if "episode" in info.keys():
-                    print(
-                        f"global_step={self.global_step}, episodic_return={info['episode']['r']}"
-                    )
-                    if self.writer:
-                        self.writer.add_scalar(
-                            "train/episodic_return",
-                            info["episode"]["r"],
-                            self.global_step,
-                        )
-                        self.writer.add_scalar(
-                            "train/episodic_length",
-                            info["episode"]["l"],
-                            self.global_step,
-                        )
-                    # Episodic information from any one of the environments is sufficient
-                    break
-
-            # Log steps per second (SPS) every self.log_freq steps
-            if self.global_step % self.log_freq == 0:
-                print("SPS:", int(self.global_step / (time.time() - start_time)))
-                if self.writer:
-                    self.writer.add_scalar(
-                        "train/SPS",
-                        int(self.global_step / (time.time() - start_time)),
-                        self.global_step,
-                    )
-
-            # Increment the global step count
-            self.global_step += 1
-
-    def train_v2(
-        self,
-        total_timesteps: int,
-        batch_size: int,
-        learning_starts: int,
-        alpha: float | None,
-        autotune: bool,
-        gamma: float,
-        policy_frequency: int,
-        target_network_frequency: int,
-        tau: float,
-        trajectory_length: int,
-    ):
-        """
-        Train the Soft Actor-Critic (SAC) agent.
-
-        Args:
-            total_timesteps (int): The total number of timesteps to train the agent for.
-            batch_size (int): The size of each batch of experiences used for training.
-            learning_starts (int): The timestep at which learning should begin.
-            alpha (float | None): The temperature parameter for the SAC algorithm.
-                If None, it will be learned if autotune is True.
-            autotune (bool): Whether to automatically tune the temperature parameter.
-            gamma (float): The discount factor for future rewards.
-            policy_frequency (int): The frequency with which the policy should be updated.
-            target_network_frequency (int): The frequency of updating the target network.
-            tau (float): The soft update coefficient for updating the target network.
-            trajectory_length (int | None): The length of trajectories sampled from episodic
-                replay buffer.
-        """
-        self.initialize(
-            batch_size=batch_size,
-            learning_starts=learning_starts,
-            alpha=alpha,
-            autotune=autotune,
-            gamma=gamma,
-            policy_frequency=policy_frequency,
-            target_network_frequency=target_network_frequency,
-            tau=tau,
-            trajectory_length=trajectory_length,
-        )
-
-        # Start timer
-        start_time = time.time()
-
-        # Reset the environment and get initial observation
-        obs = self.envs.reset()
-
-        # Initialise source sequence buffer
-        src_buffer = {
-            env_no: [np.concatenate([ob, np.zeros(self.action_dim)], axis=0)]
-            for env_no, ob in enumerate(obs)
-        }
-
-        for _ in range(total_timesteps):
-            # Create source sequences for each environment
-            src = self.get_src_from_buffer(src_buffer)
-
-            # Get state representations
-            _, mean, _, _ = self.repr_model(src.float(), enc_only=True)
-            states = mean
-            del mean
-
-            # Sample actions
-            actions, _, _ = self.sample_action(states, to_numpy=True)
-
-            # Execute actions in the environment
-            next_obs, rewards, dones, infos = self.envs.step(actions)
-            experience = (obs, next_obs, actions, rewards, dones, infos)
-
-            # Update the buffer for each environment
-            self.update_src_buffer(src_buffer, experience)
-
-            # Prepare experience for agent update
-            experience = self.preprocess_experience(experience)
-
-            # Update the agent
-            self.update_agent(experience)
-
-            # Update the current observation
-            obs = next_obs
-
-            # Log episodic information if available
-            for info in infos:
-                if "episode" in info.keys():
-                    print(
-                        f"global_step={self.global_step}, episodic_return={info['episode']['r']}"
-                    )
-                    if self.writer:
-                        self.writer.add_scalar(
-                            "train/episodic_return",
-                            info["episode"]["r"],
-                            self.global_step,
-                        )
-                        self.writer.add_scalar(
-                            "train/episodic_length",
-                            info["episode"]["l"],
-                            self.global_step,
-                        )
-                    # Episodic information from any one of the environments is sufficient
-                    break
-
-            # Log steps per second (SPS) every self.log_freq steps
-            if self.global_step % self.log_freq == 0:
-                print("SPS:", int(self.global_step / (time.time() - start_time)))
-                if self.writer:
-                    self.writer.add_scalar(
-                        "train/SPS",
-                        int(self.global_step / (time.time() - start_time)),
-                        self.global_step,
-                    )
-
-            # Increment the global step count
-            self.global_step += 1
-
-    def update_src_buffer(self, src_buffer, experience):
-        obs, next_obs, actions, _, dones, _ = experience
-        for i, (ob, next_ob, action, done) in enumerate(
-            zip(obs, next_obs, actions, dones)
-        ):
-            # Reset the buffer if episode ends
-            if done:
-                src_buffer[i] = [
-                    np.concatenate([next_ob, np.zeros(self.action_dim)], axis=0)
-                ]
-            else:
-                # Update action for last observation in buffer
-                src_buffer[i][-1] = np.concatenate([ob, action], axis=0)
-
-                # Remove the oldest observation if buffer is full
-                if len(src_buffer[i]) == self.src_seq_length:
-                    src_buffer[i] = src_buffer[i][1:]
-
-                # Add new observation to the buffer
-                src_buffer[i].append(
-                    np.concatenate([next_ob, np.zeros(self.action_dim)], axis=0)
-                )
-
-    def get_src_from_buffer(self, src_buffer):
-        src = []
-        for _, seq in src_buffer.items():
-            src.append(self.pad_source(torch.tensor(np.array(seq))))
-
-        return torch.tensor(np.array(src)).to(self.device)
 
     def get_current_states(self, curr_obs: np.ndarray):
         # If learning hasn't started, current states are unnecessary
@@ -1062,22 +1134,22 @@ class CoreticAgent(GenericAgent):
                 )
 
         sources = sources.to(self.device).float()
-        if torch.isnan(sources).any():
-            print("Invalid source in get_states: NaNs found!")
-        if torch.isinf(sources).any():
-            print("Invalid source in get_states: Infs found!")
+        # if torch.isnan(sources).any():
+        #     print("Invalid source in get_states: NaNs found!")
+        # if torch.isinf(sources).any():
+        #     print("Invalid source in get_states: Infs found!")
 
         # Get state representations
         enc_output, mean, _, _ = self.repr_model(sources, enc_only=True)
         states = enc_output[:, -1, :]
 
-        if torch.isnan(states).any():
-            print("Invalid states in get_states: NaNs found!")
-        if torch.isinf(states).any():
-            print("Invalid states in get_states: Infs found!")
+        # if torch.isnan(states).any():
+        #     print("Invalid states in get_states: NaNs found!")
+        # if torch.isinf(states).any():
+        #     print("Invalid states in get_states: Infs found!")
         return states
 
-    def train_v3(
+    def train(
         self,
         total_timesteps: int,
         batch_size: int,
@@ -1088,7 +1160,7 @@ class CoreticAgent(GenericAgent):
         policy_frequency: int,
         target_network_frequency: int,
         tau: float,
-        trajectory_length: int,
+        state_seq_length: int,
     ):
         """
         Train the Soft Actor-Critic (SAC) agent.
@@ -1104,8 +1176,8 @@ class CoreticAgent(GenericAgent):
             policy_frequency (int): The frequency with which the policy should be updated.
             target_network_frequency (int): The frequency of updating the target network.
             tau (float): The soft update coefficient for updating the target network.
-            trajectory_length (int | None): The length of trajectories sampled from episodic
-                replay buffer.
+            state_seq_length (int | None): The length of state sequences produced by representation
+                model for critic update. Directly impact training time.
         """
         self.initialize(
             batch_size=batch_size,
@@ -1116,7 +1188,7 @@ class CoreticAgent(GenericAgent):
             policy_frequency=policy_frequency,
             target_network_frequency=target_network_frequency,
             tau=tau,
-            trajectory_length=trajectory_length,
+            state_seq_length=state_seq_length,
         )
 
         # Start timer
@@ -1145,7 +1217,7 @@ class CoreticAgent(GenericAgent):
             experience = self.preprocess_experience(experience)
 
             # Update the agent
-            self.update_agent(experience)
+            self.update_agent_v2(experience)
 
             # Update the current observation
             curr_obs = next_obs
@@ -1244,35 +1316,6 @@ class CoreticAgent(GenericAgent):
             )
             if self.writer:
                 self.writer.add_scalar(f"test/avg_return", avg_return, i + 1)
-
-    def pad_source(self, x: torch.FloatTensor):
-        """Padding on the starting ends of the series along sequence dimension
-        with zero at the sequence boundaries to match source sequence length expected
-        by representation model.
-
-        Note: If x is 2D, the dim 0 is expected to be sequence dimension, else if
-            x is 3D, then dim 1 is expected to be the sequence dimension and dim 0
-            as batch dimension.
-
-        Args:
-            x (torch.FloatTensor): A 2D or 3D tensor.
-                shape: (..., seq_length, feat_dim)
-
-        Returns:
-            torch.FloatTensor: padded sequence if necessary else the original sequence.
-        """
-        assert 2 <= x.ndim <= 3, ValueError(
-            "pad_series only suitable for 2D or 3D tensors."
-        )
-        # Calculate how much padding is needed
-        curr_length = x.size(1) if x.ndim == 3 else x.size(0)
-        padding_needed = self.src_seq_length - curr_length
-
-        # Pad x sequence along the sequence dimension (dim=1) to match src_seq_length
-        if padding_needed > 0:
-            x = F.pad(x, (0, 0, padding_needed, 0), "constant", 0)
-
-        return x
 
 
 if __name__ == "__main__":

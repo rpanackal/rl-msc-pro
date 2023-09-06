@@ -22,7 +22,9 @@ class D4RLSequenceDataset(Dataset):
         target_transform=None,
         split_length=None,
         src_features_keys: list | None = None,
-        tgt_features_keys: list | None = None
+        tgt_features_keys: list | None = None,
+        do_normalize: bool = True,
+        epsilon: float = 1e-8
     ):
         """
         Initialize a dataset for D4RL environments with sequence data.
@@ -42,6 +44,7 @@ class D4RLSequenceDataset(Dataset):
                 sequences of length split_length. Defaults to None.
             src_features_keys (tuple | None, optional): Features of source sequence. Defaults to None.
             tgt_features_keys (tuple | None, optional): Features of target sequence. Defaults to None.
+            epsilon (float) : Used in the denominator of z-score normalization for stability.
         """
         assert 0 < source_ratio < 1, ValueError(
             "The source_ratio is not in range (0,1)"
@@ -61,7 +64,7 @@ class D4RLSequenceDataset(Dataset):
         self.src_features_keys = src_features_keys if src_features_keys else D4RLSequenceDataset.feature_keys
         for key in src_features_keys:
             if key not in D4RLSequenceDataset.feature_keys:
-                raise ValueError("Unrecognized source feature keys given.")
+                raise ValueError(f"Unrecognized source feature keys given -{key}.")
 
         self.tgt_features_keys = tgt_features_keys if tgt_features_keys else D4RLSequenceDataset.feature_keys
         for key in tgt_features_keys:
@@ -69,6 +72,8 @@ class D4RLSequenceDataset(Dataset):
                 raise ValueError(f"Unrecognized target feature ({key}) keys given.")
 
         self._dataset = self._get_sequence_dataset()
+        if do_normalize:
+            self._dataset = self.normalize(self._dataset, epsilon)
 
     def __len__(self):
         return len(self._dataset)
@@ -194,6 +199,16 @@ class D4RLSequenceDataset(Dataset):
     def __getattr__(self, name):
         # Delegate attribute access to the true object
         return getattr(self._dataset, name)
+
+    @staticmethod
+    def normalize(dataset: torch.Tensor, epsilon=1e-8):
+        if not isinstance(dataset, torch.Tensor):
+            raise ValueError("Normalizaiton for non tensor dataset is not implemented!")
+        
+        mean = torch.mean(dataset, dim=(0, 1))
+        std = torch.std(dataset, dim=(0, 1))
+
+        return (dataset - mean) / (std + epsilon)
 
 if __name__ == "__main__":
     dataset = D4RLSequenceDataset("halfcheetah-medium-v2")

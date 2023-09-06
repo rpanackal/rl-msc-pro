@@ -28,11 +28,11 @@ def main():
     # Configure experiment
     config = SupervisedLearnerConfig(
         n_epochs=15,
-        model=VariationalAutoformerConfig(embed_dim=128, n_enc_blocks=2, n_dec_blocks=1),
-        dataset=D4RLDatasetConfig(env_id="halfcheetah-medium-v2"),
-        dataloader=DataLoaderConfig(),
+        model=VariationalAutoformerConfig(embed_dim=16, n_enc_blocks=2, n_dec_blocks=1, corr_factor=3),
+        dataset=D4RLDatasetConfig(env_id="halfcheetah-expert-v2", split_length=10),
+        dataloader=DataLoaderConfig(batch_size=64),
         optimizer=OptimizerConfig(
-            lr=0.001, scheduler=CosineAnnealingLRConfig(min_lr=0.0001)),
+            lr=0.0001, scheduler=CosineAnnealingLRConfig(min_lr=0.00001)),
     )
     current_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     config.name = f"{config.dataset.name}_{config.model.name}_{current_datetime}"
@@ -50,6 +50,7 @@ def main():
         split_length=config.dataset.split_length,
         src_features_keys=["observations", "actions"],
         tgt_features_keys=["observations"],
+        do_normalize=True
     )
 
     train_dataset, valid_dataset, test_dataset = random_split(
@@ -62,8 +63,8 @@ def main():
     )
 
     source, target, _ = train_dataset[0]
-    src_seq_length, src_feat_dim = source.size()
-    tgt_seq_length, tgt_feat_dim = target.size()
+    config.model.src_seq_length, src_feat_dim = source.size()
+    config.model.tgt_seq_length, tgt_feat_dim = target.size()
 
     train_loader = DataLoader(
         train_dataset,
@@ -92,19 +93,20 @@ def main():
         n_enc_blocks=config.model.n_enc_blocks,
         n_dec_blocks=config.model.n_dec_blocks,
         n_heads=config.model.n_heads,
-        src_seq_length=src_seq_length,
-        tgt_seq_length=tgt_seq_length,
+        src_seq_length=config.model.src_seq_length,
+        tgt_seq_length=config.model.tgt_seq_length,
         cond_prefix_frac=config.model.cond_prefix_frac,
         dropout=config.model.dropout,
         full_output=True
     ).to(config.device)
 
     # Define optimizer and criteria
-    def criterion(output, target, kl_weight=0.5):
+    def criterion(output, target, kl_weight=config.model.kl_weight):
         dec_output, _, mean, logvar, _ = output
-        recon_loss = F.mse_loss(dec_output, target, reduction='sum')
+        recon_loss = F.mse_loss(dec_output, target)
         kl_loss = -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp())
         return recon_loss + kl_weight * kl_loss  # Now actually using kl_weight
+
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.optimizer.lr)
 
     max_iter = config.n_epochs * (len(train_dataset) / config.dataloader.batch_size)

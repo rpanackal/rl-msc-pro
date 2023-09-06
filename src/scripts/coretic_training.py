@@ -5,12 +5,12 @@ import gym
 import numpy as np
 import torch
 
-from ..agents import CoreticAgent
+from ..agents import CoreticAgentV2
 from ..config import (
     ReinforcedLearnerConfig,
     CoreticAgentConfig,
     VariationalAutoformerConfig,
-    OptimizerConfig
+    OptimizerConfig,
 )
 from ..envs.utils import make_env
 from ..utils import set_torch_seed
@@ -22,14 +22,25 @@ if __name__ == "__main__":
     config = ReinforcedLearnerConfig(
         agent=CoreticAgentConfig(
             repr_model=VariationalAutoformerConfig(
-                embed_dim=64, src_seq_length=5, tgt_seq_length=5,
+                embed_dim=16,
+                src_seq_length=5,
+                tgt_seq_length=5,
+                corr_factor=3,
+                kl_weight=0.5,
             ),
             log_freq=10,
-            repr_model_optimizer=OptimizerConfig(lr=0.01)
+            repr_model_optimizer=OptimizerConfig(lr=1e-4),
+            actor_optimizer=OptimizerConfig(lr=5e-4),
+            critic_optimizer=OptimizerConfig(lr=1e-2),
+            kappa=0.01,
+            state_seq_length=2,
+            target_network_frequency=2,
+            policy_frequency=4,
         ),
         total_timesteps=1e6,
-        learning_starts=4000,
-        batch_size=16,
+        learning_starts=7000,
+        batch_size=64,
+        normalize_observation=True,
     )
     current_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     config.name = f"{config.env_id}_{config.agent.name}_{current_datetime}"
@@ -89,7 +100,7 @@ if __name__ == "__main__":
     with open(config_path, "w") as config_file:
         config_file.write(config.model_dump_json(exclude={"device"}))
 
-    agent = CoreticAgent(
+    agent = CoreticAgentV2(
         envs=envs,
         repr_model=model,
         repr_model_learning_rate=config.agent.repr_model_optimizer.lr,
@@ -101,7 +112,7 @@ if __name__ == "__main__":
         log_freq=config.agent.log_freq,
     )
 
-    agent.train_v3(
+    agent.train(
         total_timesteps=config.total_timesteps,
         batch_size=config.batch_size,
         learning_starts=config.learning_starts,
@@ -111,8 +122,9 @@ if __name__ == "__main__":
         policy_frequency=config.agent.policy_frequency,
         target_network_frequency=config.agent.target_network_frequency,
         tau=config.agent.tau,
-        trajectory_length=config.agent.repr_model.src_seq_length
-        + config.agent.repr_model.tgt_seq_length,
+        state_seq_length=config.agent.state_seq_length,
+        kappa=config.agent.kappa,
+        kl_weight=config.agent.repr_model.kl_weight,
     )
 
     # agent.test(n_episodes=10)

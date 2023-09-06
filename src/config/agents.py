@@ -18,11 +18,14 @@ class SACAgentConfig(AgentConfig):
     noise_clip: float = 0.5 # Unused
     log_freq: int = 10
 
-    buffer: BufferConfig = BufferConfig()
+    buffer: SerializeAsAny[BufferConfig] = BufferConfig()
     actor_optimizer: OptimizerConfig = OptimizerConfig(lr=3e-4)
     critic_optimizer: OptimizerConfig = OptimizerConfig(lr=1e-3)
 
 class CoreticAgentConfig(SACAgentConfig):
     name: str  = "coretic"
+    state_seq_length: int = 2
+    kappa: float = 0.01
+
     repr_model: VariationalAutoformerConfig
     repr_model_optimizer: OptimizerConfig = OptimizerConfig(lr=0.1)

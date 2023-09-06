@@ -384,7 +384,7 @@ class Autoformer(nn.Module):
         tgt_seq_length: int,
         cond_prefix_frac: float,
         dropout: float,
-        full_output: bool =  False,
+        full_output: bool = False,
         *args,
         **kwargs
     ) -> None:
@@ -424,7 +424,7 @@ class Autoformer(nn.Module):
         self.src_seq_length = src_seq_length
         self.tgt_seq_length = tgt_seq_length
         self.full_output = full_output
-        
+
         self.enc_embedding = ContinuousEmbedding(
             feat_dim=src_feat_dim, embed_dim=embed_dim
         )
@@ -544,7 +544,13 @@ class Autoformer(nn.Module):
 
         batch_size = x_enc.size(0)
 
-        # When x_dec is None, conditional is simply zeroes
+        # Mean of encoder input along sequence dimension
+        mean = torch.mean(x_enc, dim=1, keepdim=True).repeat(1, self.tgt_seq_length, 1)
+        conditional = torch.zeros(
+            [batch_size, self.tgt_seq_length, self.src_feat_dim],
+            device=x_enc.device,
+        )
+        # Compute the conditional input to decoder along target sequence length
         if x_dec is not None:
             assert x_dec.shape[0:2] == (batch_size, self.tgt_seq_length), ValueError(
                 "Conditioning input needs to match batch_size and tgt_seq_length."
@@ -553,28 +559,21 @@ class Autoformer(nn.Module):
                 "Conditioning input feat_dim can be atmost src_feat_dim."
             )
 
-            # Pad x_dec with zeroes to match src_feat_dim
-            padding_needed = self.src_feat_dim - x_dec.size(-1)
-            if padding_needed:
-                conditional = F.pad(x_dec, (padding_needed, 0), "constant", 0).to(
-                    x_enc.device
-                )
-            else:
-                conditional = x_dec
-        else:
-            conditional = torch.zeros(
-                [batch_size, self.tgt_seq_length, self.src_feat_dim],
-                device=x_enc.device,
-            )
+            x_dec_feat_dim = x_dec.size(-1)
+            x_dec_seasonal, x_dec_trend = self.series_decomp(
+                x_dec
+            )  # (batch_size, tgt_seq_length, some_dim)
 
-        mean = torch.mean(x_enc, dim=1, keepdim=True).repeat(1, self.tgt_seq_length, 1)
+            conditional[:, :, -x_dec_feat_dim:] = x_dec_seasonal
+            mean[:, :, -x_dec_feat_dim:] = x_dec_trend
 
-        seasonal_init, trend_init = self.series_decomp(x_enc)
+        seasonal_init, trend_init = self.series_decomp(
+            x_enc
+        )  # (batch_size, src_seq_length, src_feat_dim)
 
         seasonal_init = torch.cat(
             [seasonal_init[:, -self.prefix_length :, :], conditional], dim=1
         )
-
         trend_init = torch.cat([trend_init[:, -self.prefix_length :, :], mean], dim=1)
 
         return seasonal_init, trend_init
