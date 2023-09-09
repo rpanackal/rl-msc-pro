@@ -139,7 +139,7 @@ class EpisodicBuffer(BaseBuffer):
         # different cycles differently.
         #   - Assume last transition of progressing episode is done
         dones[self.pos - 1, :] = 1
-        #   - Assume last transition is buffer is done, if full.
+        #   - Assume last transition in buffer is done, if full.
         if self.full:
              dones[-1, :] = 1
         

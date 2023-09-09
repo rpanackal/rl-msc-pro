@@ -567,13 +567,16 @@ class Autoformer(nn.Module):
             conditional[:, :, -x_dec_feat_dim:] = x_dec_seasonal
             mean[:, :, -x_dec_feat_dim:] = x_dec_trend
 
-        seasonal_init, trend_init = self.series_decomp(
-            x_enc
-        )  # (batch_size, src_seq_length, src_feat_dim)
+        if self.prefix_length:
+            seasonal_init, trend_init = self.series_decomp(
+                x_enc
+            )  # (batch_size, src_seq_length, src_feat_dim)
 
-        seasonal_init = torch.cat(
-            [seasonal_init[:, -self.prefix_length :, :], conditional], dim=1
-        )
-        trend_init = torch.cat([trend_init[:, -self.prefix_length :, :], mean], dim=1)
+            seasonal_init = torch.cat(
+                [seasonal_init[:, -self.prefix_length :, :], conditional], dim=1
+            )
+            trend_init = torch.cat([trend_init[:, -self.prefix_length :, :], mean], dim=1)
 
-        return seasonal_init, trend_init
+            return seasonal_init, trend_init
+
+        return conditional, mean

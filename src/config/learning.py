@@ -13,12 +13,10 @@ class SupervisedLearnerConfig(BaseModel):
     random_seed: int = 42
     n_epochs: int = 20
     device: torch.device = Field(
-        default=torch.device("cuda:0" if torch.cuda.is_available() else "cpu"),
+        default=torch.device("cuda:6" if torch.cuda.is_available() else "cpu"),
         exclude=True,
     )
     checkpoint_dir: PurePath = PurePath("src/checkpoints/")
-
-    normalize_observation: bool = True
     
     dataset: SerializeAsAny[DatasetConfig] = DatasetConfig()
     dataloader: DataLoaderConfig = DataLoaderConfig()

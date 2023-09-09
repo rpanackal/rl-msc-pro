@@ -8,7 +8,7 @@ LOG_STD_MAX = 2
 
 
 class Actor(nn.Module):
-    def __init__(self, env, observation_dim):
+    def __init__(self, env, feat_dim):
         """Initialize the Actor model.
 
         Args:
@@ -17,7 +17,7 @@ class Actor(nn.Module):
         super().__init__()
         action_dim = np.prod(env.single_action_space.shape)
 
-        self.fc1 = nn.Linear(observation_dim, 256)
+        self.fc1 = nn.Linear(feat_dim, 256)
         self.fc2 = nn.Linear(256, 256)
         self.fc_mean = nn.Linear(256, action_dim)
         self.fc_logstd = nn.Linear(256, action_dim)

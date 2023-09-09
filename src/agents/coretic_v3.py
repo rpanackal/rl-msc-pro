@@ -7,26 +7,15 @@ import torch.nn.functional as F
 from gym.vector import VectorEnv
 from torch import nn, optim
 from torch.utils.tensorboard import SummaryWriter
-from typing import Union, NamedTuple, Any
 
 from ..assets import Autoformer
 from ..assets.models import Actor, SoftQNetwork
 from ..data.buffer import EpisodicBuffer, EpisodicBufferSamples
-from .core import GenericAgent
+from .core import GenericAgent, CompactStateTransitions
 from ..meters.timer import Timer
 
 
-class CompactStateTransitions(NamedTuple):
-    """A sequence of continuous transitions
-    of compact state, action, reward and dones."""
-
-    states: torch.Tensor
-    actions: torch.Tensor
-    rewards: torch.Tensor
-    dones: torch.Tensor
-
-
-class CoreticAgentV2(GenericAgent):
+class CoreticAgentV3(GenericAgent):
     """Contextual Representation Learning via Time Series Transformers for Control" """
 
     def __init__(
@@ -56,9 +45,11 @@ class CoreticAgentV2(GenericAgent):
             self.n_envs = 1
 
         self.repr_model = repr_model.float()
+
         self.src_seq_length = self.repr_model.src_seq_length
         self.tgt_seq_length = self.repr_model.tgt_seq_length
-        self.repr_dim = self.repr_model.embed_dim
+        self.embed_dim = self.repr_model.embed_dim
+        self.repr_dim = self.embed_dim * self.src_seq_length
 
         self.actor = Actor(envs, self.repr_dim).to(device)
         self.qf1 = SoftQNetwork(envs, self.repr_dim).to(device)
@@ -365,26 +356,31 @@ class CoreticAgentV2(GenericAgent):
             conditional = conditionals[:, t : t + self.tgt_seq_length, :]
 
             # 3. Produce state representations and future observations
-            dec_output, enc_output, mean, logvar, _ = self.repr_model(
+            self.repr_model.train()
+            dec_output, enc_output, mean, logvar, latent = self.repr_model(
                 source, x_dec=conditional, full_output=True
             )
 
             # 4. Store final element along sequence dimension of enc_output as the state s_t,
             # Map times steps from source to time steps in trajectory.
-            state_transitions.states[:, t - start, :] = enc_output[:, -1, :]
-
+            # state_transitions.states[:, t - start, :] = enc_output[:, -1, :]
+            with torch.no_grad():
+                state_transitions.states[:, t - start, :] = torch.flatten(
+                    enc_output, start_dim=1, end_dim=2
+                )
             # 5. Compute representation model loss
             mse_loss = F.mse_loss(dec_output, target)
             kl_loss = -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp())
             total_loss = mse_loss + self.kl_weight * kl_loss
 
-            # 6. Perform backpropagation to update the representation learning model.
+            # # 6. Perform backpropagation to update the representation learning model.
             self.repr_optimizer.zero_grad()
             total_loss.backward()
             self.repr_optimizer.step()
 
         # Log Q-function loss information of last state in sequence every log_freq steps.
         if self.global_step % self.log_freq == 0 and self.writer:
+            ...
             self.writer.add_scalar(
                 "losses/repr_loss", total_loss.item(), self.global_step
             )
@@ -408,14 +404,10 @@ class CoreticAgentV2(GenericAgent):
         # ? Should loop be replaced with reshape to perform all operations at once?
         for t in range(self.state_seq_length - 1):
             with torch.no_grad():
-                # 1. Get current and next state
-                curr_state = state_transitions.states[:, t, :]
-                next_state = state_transitions.states[:, t + 1, :]
-
                 # 2. Sample next action and compute Q-value targets
-                next_state_action, next_state_log_pi, _ = self.sample_action(next_state)
-                qf1_next_target = self.qf1_target(next_state, next_state_action)
-                qf2_next_target = self.qf2_target(next_state, next_state_action)
+                next_state_action, next_state_log_pi, _ = self.sample_action(state_transitions.states[:, t + 1, :])
+                qf1_next_target = self.qf1_target(state_transitions.states[:, t + 1, :], next_state_action)
+                qf2_next_target = self.qf2_target(state_transitions.states[:, t + 1, :], next_state_action)
 
                 # 3. Compute the minimum Q-value target and the target for the Q-function update
                 min_qf_next_target = (
@@ -427,10 +419,10 @@ class CoreticAgentV2(GenericAgent):
                 ) * self.gamma * min_qf_next_target.view(-1)
 
             # 4. Compute the Q-values and the MSE loss for both critics
-            qf1_a_value = self.qf1(curr_state, state_transitions.actions[:, t, :]).view(
+            qf1_a_value = self.qf1(state_transitions.states[:, t, :], state_transitions.actions[:, t, :]).view(
                 -1
             )
-            qf2_a_value = self.qf2(curr_state, state_transitions.actions[:, t, :]).view(
+            qf2_a_value = self.qf2(state_transitions.states[:, t, :], state_transitions.actions[:, t, :]).view(
                 -1
             )
             qf1_loss = F.mse_loss(qf1_a_value, next_q_value)
@@ -469,10 +461,10 @@ class CoreticAgentV2(GenericAgent):
             None: The method updates the actor network and optionally the temperature parameter
                 in-place.
         """
-        
+
         # 4. Store final element along sequence dimension of enc_output as the state s_t,
-        with torch.no_grad():
-            state = state_transitions.states[:, -1, :]
+        t = torch.randint(high=self.state_seq_length, size=(1,)).item()
+        state = state_transitions.states[:, t, :]
 
         # START: Policy freq loop
         for _ in range(self.policy_frequency):
@@ -593,6 +585,7 @@ class CoreticAgentV2(GenericAgent):
         source[:, -1, -self.action_dim :] = 0
 
         # 3. Produce state representations and future observations
+        self.repr_model.eval()
         with torch.no_grad():
             enc_output, mean, _, _ = self.repr_model(source, enc_only=True)
 
@@ -725,8 +718,10 @@ class CoreticAgentV2(GenericAgent):
         #     print("Invalid source in get_states: Infs found!")
 
         # Get state representations
-        enc_output, mean, _, _ = self.repr_model(source, enc_only=True)
-        state = enc_output[:, -1, :]
+        self.repr_model.eval()
+        with torch.no_grad():
+            enc_output, mean, logvar, latent = self.repr_model(source, enc_only=True)
+        state = torch.flatten(enc_output, start_dim=1, end_dim=2)
 
         # if torch.isnan(states).any():
         #     print("Invalid states in get_states: NaNs found!")
@@ -802,9 +797,7 @@ class CoreticAgentV2(GenericAgent):
                 action, _, _ = self.sample_action(states)
 
             action = (
-                action.cpu().numpy()
-                if not isinstance(action, np.ndarray)
-                else action
+                action.cpu().numpy() if not isinstance(action, np.ndarray) else action
             )
             # Execute actions in the environment
             next_ob, reward, done, info = self.envs.step(action)
@@ -938,4 +931,4 @@ if __name__ == "__main__":
 
     envs = gym.make_env(env_id, seed)
 
-    agent = CoreticAgentV2()
+    agent = CoreticAgentV3()

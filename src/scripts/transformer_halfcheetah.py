@@ -8,9 +8,9 @@ from torch.utils.data import DataLoader, random_split
 from datetime import datetime
 import gym
 
-from ..assets import Autoformer
+from ..assets import Transformer
 from ..config import (
-    AutoformerConfig,
+    TransformerConfig,
     D4RLDatasetConfig,
     SupervisedLearnerConfig,
     OptimizerConfig,
@@ -22,17 +22,20 @@ from ..learning import SupervisedLearner, SupervisedEvaluator
 from ..transforms import RandomCropSequence
 from torch.utils.tensorboard import SummaryWriter
 
+
 def main():
     # Configure experiment
     config = SupervisedLearnerConfig(
         n_epochs=15,
-        model=AutoformerConfig(embed_dim=128,
-                               n_enc_blocks=4,
-                               n_dec_blocks=4),
-        dataset=D4RLDatasetConfig(env_id="halfcheetah-medium-v2", split_length=100),
-        dataloader=DataLoaderConfig(),
-        optimizer=OptimizerConfig(scheduler=CosineAnnealingLRConfig(min_lr=0.001)),
+        model=TransformerConfig(embed_dim=16, n_enc_blocks=2, n_dec_blocks=1),
+        dataset=D4RLDatasetConfig(env_id="halfcheetah-expert-v2", split_length=10, normalize_observation=False),
+        dataloader=DataLoaderConfig(batch_size=64),
+        optimizer=OptimizerConfig(
+            lr=1e-3, scheduler=CosineAnnealingLRConfig(min_lr=0.0001)
+        ),
     )
+    current_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    config.name = f"{config.dataset.name}_{config.model.name}_{current_datetime}"
 
     # Create Gym environment
     env = gym.make(config.dataset.name)
@@ -47,6 +50,7 @@ def main():
         split_length=config.dataset.split_length,
         src_features_keys=["observations", "actions"],
         tgt_features_keys=["observations"],
+        do_normalize=config.dataset.normalize_observation,
     )
 
     train_dataset, valid_dataset, test_dataset = random_split(
@@ -79,11 +83,11 @@ def main():
     )
 
     # Define Model
-    model = nn.Transformer(
+    model = Transformer(
+        src_feat_dim=src_feat_dim,
+        tgt_feat_dim=tgt_feat_dim,
         embed_dim=config.model.embed_dim,
         expanse_dim=config.model.expanse_dim,
-        kernel_size=config.model.kernel_size,
-        corr_factor=config.model.corr_factor,
         n_enc_blocks=config.model.n_enc_blocks,
         n_dec_blocks=config.model.n_dec_blocks,
         n_heads=config.model.n_heads,
@@ -94,7 +98,7 @@ def main():
     ).to(config.device)
 
     # Define optimizer and criteria
-    criterion = nn.MSELoss(reduction='sum')
+    criterion = nn.MSELoss()
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.optimizer.lr)
 
     max_iter = config.n_epochs * (len(train_dataset) / config.dataloader.batch_size)
@@ -103,9 +107,7 @@ def main():
     )
 
     # Setup trial logging
-    current_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    trial_name = f"{config.dataset.name}_{config.model.name}_{current_datetime}"
-    log_dir = config.checkpoint_dir / trial_name
+    log_dir = config.checkpoint_dir / config.name
     writer = SummaryWriter(log_dir=log_dir)
 
     # Define learner
@@ -119,7 +121,7 @@ def main():
         config=config,
         writer=writer,
         custom_to_model=custom_to_model,
-        custom_to_criterion=custom_to_criterion
+        custom_to_criterion=custom_to_criterion,
     )
 
     # Training
@@ -135,23 +137,44 @@ def main():
         config=config,
         writer=writer,
         custom_to_model=custom_to_model,
-        custom_to_criterion=custom_to_criterion
+        custom_to_criterion=custom_to_criterion,
     )
     evaluator.test()
 
     env.close()
     writer.close()
 
+
+# def custom_to_model(learner, batch):
+#     source, _, extras = batch
+
+#     args = []
+#     kwargs = {
+#         "x_enc": source.to(learner.device),
+#         "x_dec": None,
+#     }
+
+#     return args, kwargs
+
+
+# def custom_to_criterion(learner, batch, output):
+#     source, target, _ = batch
+#     target = source[:, :, :17]
+#     args = [output, target.to(learner.device)]
+#     kwargs = {}
+
+#     return args, kwargs
 def custom_to_model(learner, batch):
     source, _, extras = batch
 
     args = []
     kwargs = {
-        'x_enc': source.to(learner.device),
-        'x_dec': extras["actions"].to(learner.device)
+        "x_enc": source.to(learner.device),
+        "x_dec": extras["actions"].to(learner.device),
     }
 
     return args, kwargs
+
 
 def custom_to_criterion(learner, batch, output):
     _, target, _ = batch
@@ -160,7 +183,6 @@ def custom_to_criterion(learner, batch, output):
     kwargs = {}
 
     return args, kwargs
-
 
 if __name__ == "__main__":
     main()

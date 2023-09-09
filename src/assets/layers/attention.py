@@ -89,8 +89,6 @@ class MultiHeadAttention(nn.Module):
                 shape : (batch_size, n_heads, seq_length, head_dim)
             K (_type_): _description_
                 shape : (batch_size, n_heads, seq_length, head_dim)
-            V (_type_): _description_
-                shape : (batch_size, n_heads, seq_length, head_dim)
             attn_mask (_type_, optional): _description_. Defaults to None.
 
         Returns:
@@ -104,7 +102,7 @@ class MultiHeadAttention(nn.Module):
 
         # Fill those positions of product matrix as (-1e9) where attn_mask positions are 0
         if attn_mask is not None:
-            attn_scores = attn_scores.masked_fill(attn_mask == 0, -1e9)
+            attn_scores = attn_scores.masked_fill(attn_mask == True, -1e9)
 
         return attn_scores
 

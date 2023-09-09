@@ -1,6 +1,8 @@
 import gym
 import numpy as np
 from abc import ABC, abstractmethod
+import torch
+from typing import NamedTuple
 
 class GenericAgent(ABC):
     def __init__(self, env):
@@ -52,3 +54,12 @@ class GenericAgent(ABC):
                 state = next_state
             
             print(f"Episode {episode}: Reward = {episode_reward}")
+
+class CompactStateTransitions(NamedTuple):
+    """A sequence of continuous transitions
+    of compact state, action, reward and dones."""
+
+    states: torch.Tensor
+    actions: torch.Tensor
+    rewards: torch.Tensor
+    dones: torch.Tensor

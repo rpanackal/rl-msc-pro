@@ -4,13 +4,15 @@ import torch
 import torch.nn as nn
 import torchvision.transforms as transforms
 from d4rl import gym_mujoco
+import torch.nn.functional as F
+
 from torch.utils.data import DataLoader, random_split
 from datetime import datetime
 import gym
 
-from ..assets import Autoformer
+from ..assets import VariationalTransformer
 from ..config import (
-    AutoformerConfig,
+    VariationalTransformerConfig,
     D4RLDatasetConfig,
     SupervisedLearnerConfig,
     OptimizerConfig,
@@ -27,15 +29,11 @@ def main():
     # Configure experiment
     config = SupervisedLearnerConfig(
         n_epochs=15,
-        model=AutoformerConfig(
-            embed_dim=64, expanse_dim=512, n_enc_blocks=2, n_dec_blocks=1, corr_factor=3
-        ),
-        dataset=D4RLDatasetConfig(
-            env_id="halfcheetah-medium-v2", split_length=10, normalize_observation=False
-        ),
-        dataloader=DataLoaderConfig(batch_size=128),
+        model=VariationalTransformerConfig(embed_dim=16, n_enc_blocks=2, n_dec_blocks=1),
+        dataset=D4RLDatasetConfig(env_id="halfcheetah-expert-v2", split_length=10, normalize_observation=False),
+        dataloader=DataLoaderConfig(batch_size=64),
         optimizer=OptimizerConfig(
-            lr=0.0001, scheduler=CosineAnnealingLRConfig(min_lr=0.00001)
+            lr=1e-3, scheduler=CosineAnnealingLRConfig(min_lr=0.0001)
         ),
     )
     current_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -87,13 +85,11 @@ def main():
     )
 
     # Define Model
-    model = Autoformer(
+    model = VariationalTransformer(
         src_feat_dim=src_feat_dim,
         tgt_feat_dim=tgt_feat_dim,
         embed_dim=config.model.embed_dim,
         expanse_dim=config.model.expanse_dim,
-        kernel_size=config.model.kernel_size,
-        corr_factor=config.model.corr_factor,
         n_enc_blocks=config.model.n_enc_blocks,
         n_dec_blocks=config.model.n_dec_blocks,
         n_heads=config.model.n_heads,
@@ -101,10 +97,16 @@ def main():
         tgt_seq_length=config.model.tgt_seq_length,
         cond_prefix_frac=config.model.cond_prefix_frac,
         dropout=config.model.dropout,
+        full_output=True
     ).to(config.device)
 
     # Define optimizer and criteria
-    criterion = nn.MSELoss()
+    def criterion(output, target, kl_weight=config.model.kl_weight):
+        dec_output, _, mean, logvar, _ = output
+        recon_loss = F.mse_loss(dec_output, target)
+        kl_loss = -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp())
+        return recon_loss + kl_weight * kl_loss  # Now actually using kl_weight
+
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.optimizer.lr)
 
     max_iter = config.n_epochs * (len(train_dataset) / config.dataloader.batch_size)
@@ -157,20 +159,38 @@ def custom_to_model(learner, batch):
     args = []
     kwargs = {
         "x_enc": source.to(learner.device),
-        "x_dec": extras["actions"].to(learner.device),
+        "x_dec": None,
     }
 
     return args, kwargs
 
 
 def custom_to_criterion(learner, batch, output):
-    _, target, _ = batch
-
+    source, target, _ = batch
+    target = source[:, :, :17]
     args = [output, target.to(learner.device)]
     kwargs = {}
 
     return args, kwargs
+# def custom_to_model(learner, batch):
+#     source, _, extras = batch
 
+#     args = []
+#     kwargs = {
+#         "x_enc": source.to(learner.device),
+#         "x_dec": extras["actions"].to(learner.device),
+#     }
+
+#     return args, kwargs
+
+
+# def custom_to_criterion(learner, batch, output):
+#     _, target, _ = batch
+
+#     args = [output, target.to(learner.device)]
+#     kwargs = {}
+
+#     return args, kwargs
 
 if __name__ == "__main__":
     main()

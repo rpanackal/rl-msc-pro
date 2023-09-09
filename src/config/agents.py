@@ -2,7 +2,7 @@ from pydantic_settings import BaseSettings
 from pydantic import BaseModel, SerializeAsAny
 from .optimizer import OptimizerConfig
 from .data import BufferConfig
-from .assets import VariationalAutoformerConfig, AutoformerConfig
+from .assets import VariationalAutoformerConfig, TransformerConfig
 
 class AgentConfig(BaseModel):
     name: str  = ""
@@ -28,4 +28,12 @@ class CoreticAgentConfig(SACAgentConfig):
     kappa: float = 0.01
 
     repr_model: VariationalAutoformerConfig
+    repr_model_optimizer: OptimizerConfig = OptimizerConfig(lr=0.1)
+
+class CoretranAgentConfig(SACAgentConfig):
+    name: str  = "coretran"
+    state_seq_length: int = 2
+    kappa: float = 0.01
+
+    repr_model: TransformerConfig
     repr_model_optimizer: OptimizerConfig = OptimizerConfig(lr=0.1)

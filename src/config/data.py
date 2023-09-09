@@ -12,7 +12,8 @@ class D4RLDatasetConfig(DatasetConfig):
     validation_ratio: float = 0.3
     test_ratio: float = 0.1
     source_ratio: float = 0.5
-
+    normalize_observation: bool = True
+    
     crop_length: int = 100
     split_length: int = 100
 

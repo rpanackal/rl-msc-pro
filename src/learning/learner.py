@@ -175,9 +175,10 @@ class SupervisedLearner:
             loss = self.criterion(*args, **kwargs)
 
         if self._valid_iter % self.log_freq == 0:
-            self.writer.add_scalar(
-                "validation/iteration/loss", loss.item(), self._valid_iter
-            )
+            if self.writer:
+                self.writer.add_scalar(
+                    "validation/iteration/loss", loss.item(), self._valid_iter
+                )
             print(
                 f"\nValidation - Loss at iteration {self._valid_iter}: {loss.item()}",
                 end=" ",

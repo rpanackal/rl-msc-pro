@@ -1,3 +1,7 @@
+"""
+Training logic for coretic V3 agent that used a pretrained frozen variational autoencoder
+as represetnation model.
+"""
 import time
 from datetime import datetime
 
@@ -5,7 +9,7 @@ import gym
 import numpy as np
 import torch
 
-from ..agents import CoreticAgentV2
+from ..agents import CoreticAgentV3, SACwReprModel
 from ..config import (
     ReinforcedLearnerConfig,
     CoreticAgentConfig,
@@ -18,30 +22,43 @@ from ..assets import VariationalAutoformer
 from ..envs.normalization import RMVNormalizeVecObservation
 from torch.utils.tensorboard import SummaryWriter
 
+
+def load_pretrained_model(model, path):
+    checkpoint = torch.load(path)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    print("Loaded pretrained model")
+    return model
+
+
 if __name__ == "__main__":
     config = ReinforcedLearnerConfig(
         agent=CoreticAgentConfig(
+            name="pretrained-coretic",
             repr_model=VariationalAutoformerConfig(
                 embed_dim=16,
                 src_seq_length=5,
                 tgt_seq_length=5,
                 corr_factor=3,
-                kl_weight=0.8,
+                kl_weight=0.7,
+                n_enc_blocks=2,
+                n_dec_blocks=1,
+                expanse_dim=512,
             ),
             log_freq=100,
-            repr_model_optimizer=OptimizerConfig(lr=1e-3),
-            actor_optimizer=OptimizerConfig(lr=5e-3),
+            repr_model_optimizer=OptimizerConfig(lr=1e-5),
+            actor_optimizer=OptimizerConfig(lr=3e-4),
             critic_optimizer=OptimizerConfig(lr=1e-3),
-            kappa=0.01,
+            kappa=0.001,
             state_seq_length=2,
             target_network_frequency=2,
             policy_frequency=4,
-            autotune=False
+            autotune=False,
+            alpha=0.2
         ),
         total_timesteps=1e6,
         learning_starts=7000,
         batch_size=64,
-        normalize_observation=True,
+        normalize_observation=False,
     )
     current_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     config.name = f"{config.env_id}_{config.agent.name}_{current_datetime}"
@@ -93,6 +110,11 @@ if __name__ == "__main__":
 
     print(model)
 
+    model = load_pretrained_model(
+        model,
+        path="/home/rajanro/projects/rl-msc-pro/src/checkpoints/halfcheetah-expert-v2_variational-autoformer_2023-09-09_13-27-10/checkpoint.pth",
+    )
+
     # Setup trial logging
     log_dir = config.checkpoint_dir / config.name
     writer = SummaryWriter(log_dir=log_dir)
@@ -101,7 +123,7 @@ if __name__ == "__main__":
     with open(config_path, "w") as config_file:
         config_file.write(config.model_dump_json(exclude={"device"}))
 
-    agent = CoreticAgentV2(
+    agent = CoreticAgentV3(
         envs=envs,
         repr_model=model,
         repr_model_learning_rate=config.agent.repr_model_optimizer.lr,

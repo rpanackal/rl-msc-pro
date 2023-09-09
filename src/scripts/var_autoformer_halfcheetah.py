@@ -8,6 +8,7 @@ from d4rl import gym_mujoco
 from torch.utils.data import DataLoader, random_split
 from datetime import datetime
 import gym
+import json
 
 from ..assets import VariationalAutoformer
 from ..config import (
@@ -16,23 +17,35 @@ from ..config import (
     SupervisedLearnerConfig,
     OptimizerConfig,
     CosineAnnealingLRConfig,
-    DataLoaderConfig
+    DataLoaderConfig,
 )
 from ..data.dataset import D4RLSequenceDataset
 from ..learning import SupervisedLearner, SupervisedEvaluator
 from ..transforms import RandomCropSequence
+from ..utils import flatten_dict
 from torch.utils.tensorboard import SummaryWriter
 
 
 def main():
     # Configure experiment
     config = SupervisedLearnerConfig(
-        n_epochs=15,
-        model=VariationalAutoformerConfig(embed_dim=16, n_enc_blocks=2, n_dec_blocks=1, corr_factor=3),
-        dataset=D4RLDatasetConfig(env_id="halfcheetah-expert-v2", split_length=10),
-        dataloader=DataLoaderConfig(batch_size=64),
+        n_epochs=30,
+        model=VariationalAutoformerConfig(
+            embed_dim=16,
+            expanse_dim=512,
+            n_enc_blocks=2,
+            n_dec_blocks=1,
+            corr_factor=3,
+            kl_weight=0.7,
+            cond_prefix_frac=0
+        ),
+        dataset=D4RLDatasetConfig(
+            env_id="halfcheetah-expert-v2", split_length=10, normalize_observation=False
+        ),
+        dataloader=DataLoaderConfig(batch_size=128),
         optimizer=OptimizerConfig(
-            lr=0.0001, scheduler=CosineAnnealingLRConfig(min_lr=0.00001)),
+            lr=0.0001, scheduler=CosineAnnealingLRConfig(min_lr=0.00001)
+        ),
     )
     current_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     config.name = f"{config.dataset.name}_{config.model.name}_{current_datetime}"
@@ -50,7 +63,7 @@ def main():
         split_length=config.dataset.split_length,
         src_features_keys=["observations", "actions"],
         tgt_features_keys=["observations"],
-        do_normalize=True
+        do_normalize=config.dataset.normalize_observation,
     )
 
     train_dataset, valid_dataset, test_dataset = random_split(
@@ -97,7 +110,7 @@ def main():
         tgt_seq_length=config.model.tgt_seq_length,
         cond_prefix_frac=config.model.cond_prefix_frac,
         dropout=config.model.dropout,
-        full_output=True
+        full_output=True,
     ).to(config.device)
 
     # Define optimizer and criteria
@@ -129,7 +142,7 @@ def main():
         config=config,
         writer=writer,
         custom_to_model=custom_to_model,
-        custom_to_criterion=custom_to_criterion
+        custom_to_criterion=custom_to_criterion,
     )
 
     # Training
@@ -145,23 +158,29 @@ def main():
         config=config,
         writer=writer,
         custom_to_model=custom_to_model,
-        custom_to_criterion=custom_to_criterion
+        custom_to_criterion=custom_to_criterion,
     )
-    evaluator.test()
+    result = evaluator.test()
 
+    # writer.add_hparams(
+    #     hparam_dict=flatten_dict(json.loads(config.model_dump_json()), sep="/"),
+    #     metric_dict={"test/avg_loss": result.loss}, run_name="hyperparameters"
+    # )
     env.close()
     writer.close()
+
 
 def custom_to_model(learner, batch):
     source, _, extras = batch
 
     args = []
     kwargs = {
-        'x_enc': source.to(learner.device),
-        'x_dec': extras["actions"].to(learner.device)
+        "x_enc": source.to(learner.device),
+        "x_dec": extras["actions"].to(learner.device),
     }
 
     return args, kwargs
+
 
 def custom_to_criterion(learner, batch, output):
     _, target, _ = batch
@@ -170,6 +189,7 @@ def custom_to_criterion(learner, batch, output):
     kwargs = {}
 
     return args, kwargs
+
 
 if __name__ == "__main__":
     main()

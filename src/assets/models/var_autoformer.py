@@ -59,7 +59,7 @@ class VariationalEncoder(Encoder):
             logvar (Tensor): Log variance parameter of shape (batch_size, embed_dim)
         """
         x = super().forward(x, attn_mask)
-        mean, logvar = self.variational_layer(x[:, -1, :])
+        mean, logvar = self.variational_layer(x)
         return x, mean, logvar
 
 
@@ -74,7 +74,7 @@ class VariationalDecoder(Decoder):
         seasonal_init,
         trend_init,
         enc_output,
-        latent,
+        # latent,
         cross_mask=None,
         tgt_mask=None,
     ):
@@ -100,7 +100,7 @@ class VariationalDecoder(Decoder):
                 1: (Tensor): The trend part.
                     shape: (batch_size, prefix_length + tgt_seq_length, tgt_feat_dim)
         """
-        seasonal_init += latent.unsqueeze(1)  # Incorporate latent variable
+        # seasonal_init += latent.unsqueeze(1)  # Incorporate latent variable
         # trend_init += latent  # Incorporate latent variable
 
         return super().forward(
@@ -262,8 +262,8 @@ class VariationalAutoformer(Autoformer):
         seasonal_out, trend_out = self.decoder(
             seasonal_init=self.positional_encoding(self.dec_embedding(seasonal_init)),
             trend_init=trend_init,
-            enc_output=enc_output,
-            latent=latent,
+            enc_output=latent,
+            #latent=latent,
             cross_mask=cross_mask,
             tgt_mask=tgt_mask,
         )

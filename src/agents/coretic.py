@@ -538,7 +538,7 @@ class CoreticAgent(GenericAgent):
         # Pad zeros to the left of source if needed.
         padding_needed = self.src_seq_length - sources.size(1)
         if padding_needed:
-            x = F.pad(sources, (0, 0, padding_needed, 0), "constant", 0)
+            sources = F.pad(sources, (0, 0, padding_needed, 0), "constant", 0)
 
         # 2. Construct targets and conditionals.
         targets = samples.observations[

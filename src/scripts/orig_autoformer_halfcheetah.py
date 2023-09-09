@@ -27,10 +27,10 @@ from ..external.Autoformer.models.Autoformer import Model as Autoformer
 def main():
     # Configure experiment
     dataset_config = D4RLDatasetConfig(
-        env_id="halfcheetah-expert-v2",
+        env_id="halfcheetah-medium-v2",
         split_length=10,
     )
-    dataloader_config = DataLoaderConfig(batch_size=64)
+    dataloader_config = DataLoaderConfig(batch_size=128)
 
     # Create Gym environment
     env = gym.make(dataset_config.name)
@@ -45,7 +45,7 @@ def main():
         split_length=dataset_config.split_length,
         src_features_keys=["observations", "actions"],
         tgt_features_keys=["observations"],
-        do_normalize=False,
+        do_normalize=True,
     )
 
     train_dataset, valid_dataset, test_dataset = random_split(
@@ -65,14 +65,14 @@ def main():
         n_epochs=15,
         model=OrigAutoformerConfig(
             factor=3,
-            d_model=16,
+            d_model=32,
             enc_in=src_feat_dim,
             dec_in=src_feat_dim,
             c_out=tgt_feat_dim,
             seq_len=src_seq_length,
             label_len=int(src_seq_length * 0.3),
             pred_len=tgt_seq_length,
-            d_ff=16*2
+            d_ff=512
         ),
         dataset=dataset_config,
         dataloader=dataloader_config,
