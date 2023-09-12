@@ -96,6 +96,7 @@ class CoreticAgentV3(GenericAgent):
         gamma: float,
         policy_frequency: int,
         target_network_frequency: int,
+        repr_update_frequency: int,
         tau: float,
         state_seq_length: int = 2,
         kappa: float = 0.01,
@@ -155,6 +156,7 @@ class CoreticAgentV3(GenericAgent):
         self.gamma = gamma
         self.policy_frequency = policy_frequency
         self.target_network_frequency = target_network_frequency
+        self.repr_update_frequency = repr_update_frequency
         self.tau = tau
         self.kappa = kappa
         self.kl_weight = kl_weight
@@ -357,10 +359,32 @@ class CoreticAgentV3(GenericAgent):
 
             # 3. Produce state representations and future observations
             self.repr_model.train()
-            dec_output, enc_output, mean, logvar, latent = self.repr_model(
-                source, x_dec=conditional, full_output=True
-            )
+            
+            if self.global_step % self.repr_update_frequency == 0:
+                dec_output, enc_output, mean, logvar, latent = self.repr_model(
+                    source, x_dec=conditional, full_output=True
+                )
 
+                # 5. Compute representation model loss
+                mse_loss = F.mse_loss(dec_output, target)
+                kl_loss = -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp())
+                total_loss = mse_loss + self.kl_weight * kl_loss
+
+                # # 6. Perform backpropagation to update the representation learning model.
+                self.repr_optimizer.zero_grad()
+                total_loss.backward()
+                self.repr_optimizer.step()
+            else:
+                with torch.no_grad():
+                    dec_output, enc_output, mean, logvar, latent = self.repr_model(
+                    source, x_dec=conditional, full_output=True
+                )
+
+                # 5. Compute representation model loss
+                mse_loss = F.mse_loss(dec_output, target)
+                kl_loss = -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp())
+                total_loss = mse_loss + self.kl_weight * kl_loss
+        
             # 4. Store final element along sequence dimension of enc_output as the state s_t,
             # Map times steps from source to time steps in trajectory.
             # state_transitions.states[:, t - start, :] = enc_output[:, -1, :]
@@ -368,19 +392,10 @@ class CoreticAgentV3(GenericAgent):
                 state_transitions.states[:, t - start, :] = torch.flatten(
                     enc_output, start_dim=1, end_dim=2
                 )
-            # 5. Compute representation model loss
-            mse_loss = F.mse_loss(dec_output, target)
-            kl_loss = -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp())
-            total_loss = mse_loss + self.kl_weight * kl_loss
-
-            # # 6. Perform backpropagation to update the representation learning model.
-            self.repr_optimizer.zero_grad()
-            total_loss.backward()
-            self.repr_optimizer.step()
+            
 
         # Log Q-function loss information of last state in sequence every log_freq steps.
         if self.global_step % self.log_freq == 0 and self.writer:
-            ...
             self.writer.add_scalar(
                 "losses/repr_loss", total_loss.item(), self.global_step
             )
@@ -504,7 +519,7 @@ class CoreticAgentV3(GenericAgent):
 
                 # Compute the loss for alpha, aiming to keep policy entropy
                 # close to target_entropy.
-                alpha_loss = (-self.log_alpha * (log_pi + self.target_entropy)).mean()
+                alpha_loss = (-self.log_alpha.exp() * (log_pi + self.target_entropy)).mean()
 
                 # Perform backpropagation to update alpha.
                 self.alpha_optimizer.zero_grad()
@@ -630,7 +645,7 @@ class CoreticAgentV3(GenericAgent):
 
                 # Compute the loss for alpha, aiming to keep policy entropy
                 # close to target_entropy.
-                alpha_loss = (-self.log_alpha * (log_pi + self.target_entropy)).mean()
+                alpha_loss = (-self.log_alpha.exp() * (log_pi + self.target_entropy)).mean()
 
                 # Perform backpropagation to update alpha.
                 self.alpha_optimizer.zero_grad()
@@ -739,6 +754,7 @@ class CoreticAgentV3(GenericAgent):
         gamma: float,
         policy_frequency: int,
         target_network_frequency: int,
+        repr_update_frequency: int,
         tau: float,
         state_seq_length: int = 2,
         kappa: float = 0.01,
@@ -778,6 +794,7 @@ class CoreticAgentV3(GenericAgent):
             gamma=gamma,
             policy_frequency=policy_frequency,
             target_network_frequency=target_network_frequency,
+            repr_update_frequency=repr_update_frequency,
             tau=tau,
             state_seq_length=state_seq_length,
             kappa=kappa,

@@ -14,11 +14,12 @@ from ..config import (
     ReinforcedLearnerConfig,
     CoretranAgentConfig,
     TransformerConfig,
+    VariationalTransformerConfig,
     OptimizerConfig,
 )
 from ..envs.utils import make_env
 from ..utils import set_torch_seed
-from ..assets import Transformer
+from ..assets import Transformer, VariationalTransformer
 from ..envs.normalization import RMVNormalizeVecObservation
 from torch.utils.tensorboard import SummaryWriter
 
@@ -33,29 +34,30 @@ def load_pretrained_model(model, path):
 if __name__ == "__main__":
     config = ReinforcedLearnerConfig(
         agent=CoretranAgentConfig(
-            name="coretran",
             repr_model=TransformerConfig(
                 embed_dim=16,
                 n_enc_blocks=2,
                 n_dec_blocks=1,
                 src_seq_length=5,
                 tgt_seq_length=5,
+                cond_prefix_frac=0
             ),
             log_freq=100,
-            repr_model_optimizer=OptimizerConfig(lr=1e-5),
-            actor_optimizer=OptimizerConfig(lr=3e-4),
+            repr_model_optimizer=OptimizerConfig(lr=1e-4),
+            actor_optimizer=OptimizerConfig(lr=1e-4),
             critic_optimizer=OptimizerConfig(lr=1e-3),
             kappa=0.001,
             state_seq_length=2,
             target_network_frequency=2,
             policy_frequency=4,
-            autotune=False,
+            autotune=True,
             alpha=0.2
         ),
         total_timesteps=1e6,
         learning_starts=7000,
         batch_size=64,
-        normalize_observation=False,
+        normalize_observation=True,
+        device = torch.device("cuda:3" if torch.cuda.is_available() else "cpu"),
     )
     current_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     config.name = f"{config.env_id}_{config.agent.name}_{current_datetime}"
@@ -91,7 +93,7 @@ if __name__ == "__main__":
     # Define Representation Model
     model = Transformer(
         src_feat_dim=observation_dim + action_dim,
-        tgt_feat_dim=observation_dim,
+        tgt_feat_dim=observation_dim + action_dim,
         embed_dim=config.agent.repr_model.embed_dim,
         expanse_dim=config.agent.repr_model.expanse_dim,
         n_enc_blocks=config.agent.repr_model.n_enc_blocks,
@@ -107,7 +109,7 @@ if __name__ == "__main__":
 
     model = load_pretrained_model(
         model,
-        path="/home/rajanro/projects/rl-msc-pro/src/checkpoints/halfcheetah-expert-v2_transformer_2023-09-09_16-25-10/checkpoint.pth",
+        path="/home/rajanro/projects/rl-msc-pro/src/checkpoints/halfcheetah-expert-v2_transformer_2023-09-12_16-48-49/checkpoint.pth",
     )
 
     # Setup trial logging

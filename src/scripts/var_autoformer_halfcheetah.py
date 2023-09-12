@@ -29,7 +29,7 @@ from torch.utils.tensorboard import SummaryWriter
 def main():
     # Configure experiment
     config = SupervisedLearnerConfig(
-        n_epochs=30,
+        n_epochs=50,
         model=VariationalAutoformerConfig(
             embed_dim=16,
             expanse_dim=512,
@@ -44,7 +44,7 @@ def main():
         ),
         dataloader=DataLoaderConfig(batch_size=128),
         optimizer=OptimizerConfig(
-            lr=0.0001, scheduler=CosineAnnealingLRConfig(min_lr=0.00001)
+            lr=1e-3, scheduler=CosineAnnealingLRConfig(min_lr=1e-5)
         ),
     )
     current_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -175,8 +175,8 @@ def custom_to_model(learner, batch):
 
     args = []
     kwargs = {
-        "x_enc": source.to(learner.device),
-        "x_dec": extras["actions"].to(learner.device),
+        "source": source.to(learner.device),
+        "dec_init": extras["actions"].to(learner.device),
     }
 
     return args, kwargs

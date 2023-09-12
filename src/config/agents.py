@@ -29,6 +29,7 @@ class CoreticAgentConfig(SACAgentConfig):
 
     repr_model: VariationalAutoformerConfig
     repr_model_optimizer: OptimizerConfig = OptimizerConfig(lr=0.1)
+    repr_update_frequency: int = 2
 
 class CoretranAgentConfig(SACAgentConfig):
     name: str  = "coretran"

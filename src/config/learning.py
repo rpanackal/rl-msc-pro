@@ -31,8 +31,9 @@ class ReinforcedLearnerConfig(BaseModel):
     name: str = ""
     env_id: str = "HalfCheetah-v2"
     random_seed: int = 42
-    device: torch.device = torch.device(
-        "cuda:0" if torch.cuda.is_available() else "cpu"
+    device: torch.device = Field(
+        default=torch.device("cuda:6" if torch.cuda.is_available() else "cpu"),
+        exclude=True,
     )
     capture_video: bool = False
     checkpoint_dir: PurePath = PurePath("src/checkpoints/")

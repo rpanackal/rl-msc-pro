@@ -8,7 +8,7 @@ from gym.vector import VectorEnv
 from torch import nn, optim
 from torch.utils.tensorboard import SummaryWriter
 
-from ..assets import Autoformer
+from ..assets import Transformer
 from ..assets.models import Actor, SoftQNetwork
 from ..data.buffer import EpisodicBuffer, EpisodicBufferSamples
 from .core import GenericAgent, CompactStateTransitions
@@ -21,7 +21,7 @@ class CoretranAgent(GenericAgent):
     def __init__(
         self,
         envs: gym.vector.SyncVectorEnv | gym.Env,
-        repr_model: Autoformer,
+        repr_model: Transformer,
         repr_model_learning_rate: float,
         critic_learning_rate: float,
         actor_learning_rate: float,
@@ -45,6 +45,9 @@ class CoretranAgent(GenericAgent):
             self.n_envs = 1
 
         self.repr_model = repr_model.float()
+        self.repr_model_target = repr_model.model_twin().to(device)
+        self.repr_model_target.load_state_dict(self.repr_model.state_dict())
+        self.repr_model_target.eval()
 
         self.src_seq_length = self.repr_model.src_seq_length
         self.tgt_seq_length = self.repr_model.tgt_seq_length
@@ -291,7 +294,7 @@ class CoretranAgent(GenericAgent):
                 state_seq_len, ...).
         """
         # 1. Compute all possible source sequences in trajectory for which
-        # there exist a target sequence.
+        # there exist a target sequence in the sampled trajectory.
 
         # Padd zeros to the left of sequences.
         zeroes = torch.zeros(
@@ -321,8 +324,8 @@ class CoretranAgent(GenericAgent):
         )
 
         # 2. Compute target all target sequences in trajectory
-        targets = samples.observations[:, 1:, :]
-        conditionals = samples.actions[:, 1:, :]
+        # targets = samples.observations[:, 1:, :]
+        # conditionals = samples.actions[:, 1:, :]
 
         # 3. Compute index in sources to start sampling source from.
         start_atmost = self.src_seq_length - 1
@@ -334,56 +337,70 @@ class CoretranAgent(GenericAgent):
             if torch.rand(1).item() < self.kappa
             else (start_atmost)
         )
+        end = start + self.state_seq_length
 
         state_transitions = CompactStateTransitions(
             states=torch.empty(
                 (self.batch_size, self.state_seq_length, self.repr_dim)
             ).to(self.device),
-            actions=samples.actions[:, start : start + self.state_seq_length, :],
-            rewards=samples.rewards[:, start : start + self.state_seq_length],
-            dones=samples.dones[:, start : start + self.state_seq_length],
+            next_states=torch.empty(
+                (self.batch_size, self.state_seq_length - 1, self.repr_dim)
+            ).to(self.device),
+            actions=samples.actions[:, start:end, :],
+            rewards=samples.rewards[:, start:end],
+            dones=samples.dones[:, start:end],
+            loss = None
         )
 
         # Loop over state_seq_len source sequences from start.
-        for t in range(start, start + self.state_seq_length):
+        for t in range(start, end):
             # Get source, target and conditional for current time step
             source = sources[:, t : t + self.src_seq_length, :].clone()
             # During online interaction, actions are sampled and not available for state calculation
             # for corresponding time step
             source[:, -1, -self.action_dim :] = 0
 
-            target = targets[:, t : t + self.tgt_seq_length, :]
-            conditional = conditionals[:, t : t + self.tgt_seq_length, :]
+            # target = targets[:, t : t + self.tgt_seq_length, :]
+            # conditional = conditionals[:, t : t + self.tgt_seq_length, :]
 
             # 3. Produce state representations and future observations
             self.repr_model.train()
-            dec_output, enc_output = self.repr_model(
-                source, x_dec=conditional, full_output=True
-            )
 
-            # 4. Store final element along sequence dimension of enc_output as the state s_t,
-            # Map times steps from source to time steps in trajectory.
-            # state_transitions.states[:, t - start, :] = enc_output[:, -1, :]
-            with torch.no_grad():
-                state_transitions.states[:, t - start, :] = torch.flatten(
-                    enc_output, start_dim=1, end_dim=2
-                )
+            dec_output, enc_output = self.repr_model(source, full_output=True)
+
             # 5. Compute representation model loss
-            mse_loss = F.mse_loss(dec_output, target)
+            mse_loss = F.mse_loss(dec_output, source)
             # kl_loss = -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp())
-            total_loss = mse_loss # + self.kl_weight * kl_loss
+            total_loss = mse_loss  # + self.kl_weight * kl_loss
 
             # # 6. Perform backpropagation to update the representation learning model.
-            self.repr_optimizer.zero_grad()
-            total_loss.backward()
-            self.repr_optimizer.step()
+            # self.repr_optimizer.zero_grad()
+            # total_loss.backward()
+            # self.repr_optimizer.step()
 
-        # Log Q-function loss information of last state in sequence every log_freq steps.
-        if self.global_step % self.log_freq == 0 and self.writer:
-            ...
-            self.writer.add_scalar(
-                "losses/repr_loss", total_loss.item(), self.global_step
+            # Log Q-function loss information of last state in sequence every log_freq steps.
+            if self.global_step % self.log_freq == 0 and self.writer:
+                self.writer.add_scalar(
+                    "losses/repr_loss", total_loss.item(), self.global_step
+                )
+
+            state_transitions.states[:, t - start, :] = torch.flatten(
+                enc_output, start_dim=1, end_dim=2
             )
+            state_transitions.loss = total_loss
+            # 4. Store final element along sequence dimension of enc_output as the state s_t,
+            # Map times steps from source to time steps in trajectory.
+            with torch.no_grad():
+                if t + 1 < end:
+                    source = sources[:, t + 1 : t + 1 + self.src_seq_length, :].clone()
+                    # During online interaction, actions are sampled and not available for state calculation
+                    # for corresponding time step
+                    source[:, -1, -self.action_dim :] = 0
+                    enc_output = self.repr_model_target(source, enc_only=True)
+                    state_transitions.next_states[:, t - start, :] = torch.flatten(
+                        enc_output, start_dim=1, end_dim=2
+                    )
+
         # ? Should padding be done on target to get state sequence for all observations?
         return state_transitions
 
@@ -405,9 +422,15 @@ class CoretranAgent(GenericAgent):
         for t in range(self.state_seq_length - 1):
             with torch.no_grad():
                 # 2. Sample next action and compute Q-value targets
-                next_state_action, next_state_log_pi, _ = self.sample_action(state_transitions.states[:, t + 1, :])
-                qf1_next_target = self.qf1_target(state_transitions.states[:, t + 1, :], next_state_action)
-                qf2_next_target = self.qf2_target(state_transitions.states[:, t + 1, :], next_state_action)
+                next_state_action, next_state_log_pi, _ = self.sample_action(
+                    state_transitions.next_states[:, t, :]
+                )
+                qf1_next_target = self.qf1_target(
+                    state_transitions.next_states[:, t, :], next_state_action
+                )
+                qf2_next_target = self.qf2_target(
+                    state_transitions.next_states[:, t, :], next_state_action
+                )
 
                 # 3. Compute the minimum Q-value target and the target for the Q-function update
                 min_qf_next_target = (
@@ -419,20 +442,25 @@ class CoretranAgent(GenericAgent):
                 ) * self.gamma * min_qf_next_target.view(-1)
 
             # 4. Compute the Q-values and the MSE loss for both critics
-            qf1_a_value = self.qf1(state_transitions.states[:, t, :], state_transitions.actions[:, t, :]).view(
-                -1
-            )
-            qf2_a_value = self.qf2(state_transitions.states[:, t, :], state_transitions.actions[:, t, :]).view(
-                -1
-            )
+            qf1_a_value = self.qf1(
+                state_transitions.states[:, t, :], state_transitions.actions[:, t, :]
+            ).view(-1)
+            qf2_a_value = self.qf2(
+                state_transitions.states[:, t, :], state_transitions.actions[:, t, :]
+            ).view(-1)
             qf1_loss = F.mse_loss(qf1_a_value, next_q_value)
             qf2_loss = F.mse_loss(qf2_a_value, next_q_value)
             qf_loss = qf1_loss + qf2_loss
 
+            total_loss = qf_loss + state_transitions.loss
+            
             # 5. Update critic model
+            self.repr_optimizer.zero_grad()
             self.q_optimizer.zero_grad()
-            qf_loss.backward()
+            # qf_loss.backward()
+            total_loss.backward()
             self.q_optimizer.step()
+            self.repr_optimizer.step()
 
         # Log Q-function loss information of last state in sequence every log_freq steps.
         if self.global_step % self.log_freq == 0 and self.writer:
@@ -464,7 +492,7 @@ class CoretranAgent(GenericAgent):
 
         # 4. Store final element along sequence dimension of enc_output as the state s_t,
         t = torch.randint(high=self.state_seq_length, size=(1,)).item()
-        state = state_transitions.states[:, t, :]
+        state = state_transitions.states[:, t, :].detach()
 
         # START: Policy freq loop
         for _ in range(self.policy_frequency):
@@ -504,7 +532,7 @@ class CoretranAgent(GenericAgent):
 
                 # Compute the loss for alpha, aiming to keep policy entropy
                 # close to target_entropy.
-                alpha_loss = (-self.log_alpha * (log_pi + self.target_entropy)).mean()
+                alpha_loss = (-self.log_alpha.exp() * (log_pi + self.target_entropy)).mean()
 
                 # Perform backpropagation to update alpha.
                 self.alpha_optimizer.zero_grad()
@@ -520,7 +548,7 @@ class CoretranAgent(GenericAgent):
             self.writer.add_scalar(
                 "losses/actor_loss", actor_loss.item(), self.global_step
             )
-            self.writer.add_scalar("losses/alpha", self.alpha, self.global_step)
+            self.writer.add_scalar("alpha", self.alpha, self.global_step)
 
             if self.autotune:
                 self.writer.add_scalar(
@@ -587,7 +615,7 @@ class CoretranAgent(GenericAgent):
         # 3. Produce state representations and future observations
         self.repr_model.eval()
         with torch.no_grad():
-            enc_output = self.repr_model(source, enc_only=True)
+            enc_output, mean, logvar, latent = self.repr_model(source, enc_only=True)
 
         # 4. Store final element along sequence dimension of enc_output as the state s_t,
         state = enc_output[:, -1, :]
@@ -654,6 +682,7 @@ class CoretranAgent(GenericAgent):
                 )
 
     def update_target_networks(self):
+        # Q-function targets
         for param, target_param in zip(
             self.qf1.parameters(), self.qf1_target.parameters()
         ):
@@ -662,6 +691,14 @@ class CoretranAgent(GenericAgent):
             )
         for param, target_param in zip(
             self.qf2.parameters(), self.qf2_target.parameters()
+        ):
+            target_param.data.copy_(
+                self.tau * param.data + (1 - self.tau) * target_param.data
+            )
+
+        # Representation model targets
+        for param, target_param in zip(
+            self.repr_model.parameters(), self.repr_model_target.parameters()
         ):
             target_param.data.copy_(
                 self.tau * param.data + (1 - self.tau) * target_param.data
@@ -712,21 +749,14 @@ class CoretranAgent(GenericAgent):
                 )
 
         source = source.to(self.device).float()
-        # if torch.isnan(sources).any():
-        #     print("Invalid source in get_states: NaNs found!")
-        # if torch.isinf(sources).any():
-        #     print("Invalid source in get_states: Infs found!")
 
         # Get state representations
-        self.repr_model.eval()
+        # self.repr_model.eval()
         with torch.no_grad():
-            enc_output = self.repr_model(source, enc_only=True)
-        state = torch.flatten(enc_output, start_dim=1, end_dim=2)
+            enc_output = self.repr_model_target(source, enc_only=True)
 
-        # if torch.isnan(states).any():
-        #     print("Invalid states in get_states: NaNs found!")
-        # if torch.isinf(states).any():
-        #     print("Invalid states in get_states: Infs found!")
+        state = torch.flatten(enc_output, start_dim=1, end_dim=2)
+        # state = enc_output[:, -1, :]
         return state
 
     def train(

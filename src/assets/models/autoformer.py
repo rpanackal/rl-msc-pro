@@ -418,12 +418,6 @@ class Autoformer(nn.Module):
             "Conditional prefix fraction must be in range [0,1]"
         )
         self.prefix_length = math.floor(src_seq_length * cond_prefix_frac)
-        self.src_feat_dim = src_feat_dim
-        self.tgt_feat_dim = tgt_feat_dim
-        self.embed_dim = embed_dim
-        self.src_seq_length = src_seq_length
-        self.tgt_seq_length = tgt_seq_length
-        self.full_output = full_output
 
         self.enc_embedding = ContinuousEmbedding(
             feat_dim=src_feat_dim, embed_dim=embed_dim
@@ -459,10 +453,25 @@ class Autoformer(nn.Module):
             dropout=dropout,
         )
 
+        self.src_feat_dim = src_feat_dim  
+        self.tgt_feat_dim = tgt_feat_dim  
+        self.embed_dim = embed_dim  
+        self.expanse_dim = expanse_dim  
+        self.kernel_size = kernel_size  
+        self.corr_factor = corr_factor  
+        self.n_enc_blocks = n_enc_blocks  
+        self.n_dec_blocks = n_dec_blocks  
+        self.n_heads = n_heads  
+        self.src_seq_length = src_seq_length  
+        self.tgt_seq_length = tgt_seq_length  
+        self.cond_prefix_frac = cond_prefix_frac  
+        self.dropout = dropout  
+        self.full_output = full_output
+
     def forward(
         self,
-        x_enc: torch.FloatTensor,
-        x_dec: torch.FloatTensor | None = None,
+        source: torch.FloatTensor,
+        dec_init: torch.FloatTensor | None = None,
         src_mask=None,
         cross_mask=None,
         tgt_mask=None,
@@ -472,9 +481,9 @@ class Autoformer(nn.Module):
         """_summary_
 
         Args:
-            x_enc (torch.FloatTensor): Input source sequence to encoder in feature space.
+            source (torch.FloatTensor): Input source sequence to encoder in feature space.
                 shape: (batch_size, src_seq_length, src_feat_dim)
-            x_dec (torch.FloatTensor | None): Conditioning input to decoder. Added to seasonal
+            dec_init (torch.FloatTensor | None): Conditioning input to decoder. Added to seasonal
                 initalizaiton along the target sequence length. The feature dimension needs
                 to be less than src_feat_dim.
                 shape: (batch_size, tgt_seq_length, some_dim)
@@ -497,14 +506,14 @@ class Autoformer(nn.Module):
 
         # encoder section
         enc_output = self.encoder(
-            self.positional_encoding(self.enc_embedding(x_enc)), attn_mask=src_mask
+            self.positional_encoding(self.enc_embedding(source)), attn_mask=src_mask
         )
 
         if enc_only:
             return enc_output
 
         # decoder initilialization section
-        seasonal_init, trend_init = self.decoder_initializer(x_enc, x_dec)
+        seasonal_init, trend_init = self.decoder_initializer(source, dec_init)
 
         # decoder section
         seasonal_out, trend_out = self.decoder(
@@ -525,7 +534,7 @@ class Autoformer(nn.Module):
 
         return dec_output
 
-    def decoder_initializer(self, x_enc, x_dec=None):
+    def decoder_initializer(self, source, dec_init=None):
         """_summary_
 
         Args:
@@ -542,41 +551,60 @@ class Autoformer(nn.Module):
                     shape: (batch_size, prefix_length + tgt_seq_length, src_feat_dim)
         """
 
-        batch_size = x_enc.size(0)
+        batch_size = source.size(0)
 
         # Mean of encoder input along sequence dimension
-        mean = torch.mean(x_enc, dim=1, keepdim=True).repeat(1, self.tgt_seq_length, 1)
-        conditional = torch.zeros(
+        mean = torch.mean(source, dim=1, keepdim=True).repeat(1, self.tgt_seq_length, 1)
+        zeros = torch.zeros(
             [batch_size, self.tgt_seq_length, self.src_feat_dim],
-            device=x_enc.device,
+            device=source.device,
         )
         # Compute the conditional input to decoder along target sequence length
-        if x_dec is not None:
-            assert x_dec.shape[0:2] == (batch_size, self.tgt_seq_length), ValueError(
+        if dec_init is not None:
+            assert dec_init.shape[0:2] == (batch_size, self.tgt_seq_length), ValueError(
                 "Conditioning input needs to match batch_size and tgt_seq_length."
             )
-            assert x_dec.size(-1) <= self.src_feat_dim, ValueError(
+            assert dec_init.size(-1) <= self.src_feat_dim, ValueError(
                 "Conditioning input feat_dim can be atmost src_feat_dim."
             )
 
-            x_dec_feat_dim = x_dec.size(-1)
-            x_dec_seasonal, x_dec_trend = self.series_decomp(
-                x_dec
+            dec_init_feat_dim = dec_init.size(-1)
+            dec_init_seasonal, dec_init_trend = self.series_decomp(
+                dec_init
             )  # (batch_size, tgt_seq_length, some_dim)
 
-            conditional[:, :, -x_dec_feat_dim:] = x_dec_seasonal
-            mean[:, :, -x_dec_feat_dim:] = x_dec_trend
+            zeros[:, :, -dec_init_feat_dim:] = dec_init_seasonal
+            mean[:, :, -dec_init_feat_dim:] = dec_init_trend
 
         if self.prefix_length:
-            seasonal_init, trend_init = self.series_decomp(
-                x_enc
+            src_seasonal, src_trend = self.series_decomp(
+                source
             )  # (batch_size, src_seq_length, src_feat_dim)
 
             seasonal_init = torch.cat(
-                [seasonal_init[:, -self.prefix_length :, :], conditional], dim=1
+                [src_seasonal[:, -self.prefix_length :, :], zeros], dim=1
             )
-            trend_init = torch.cat([trend_init[:, -self.prefix_length :, :], mean], dim=1)
+            trend_init = torch.cat([src_trend[:, -self.prefix_length :, :], mean], dim=1)
 
             return seasonal_init, trend_init
 
-        return conditional, mean
+        return zeros, mean
+
+    def model_twin(self):
+        """Return a new instance of the same class with the same configuration."""
+        return self.__class__(
+            src_feat_dim = self.src_feat_dim,  
+            tgt_feat_dim = self.tgt_feat_dim,  
+            embed_dim = self.embed_dim,  
+            expanse_dim = self.expanse_dim,  
+            kernel_size = self.kernel_size,  
+            corr_factor = self.corr_factor,  
+            n_enc_blocks = self.n_enc_blocks,  
+            n_dec_blocks = self.n_dec_blocks,  
+            n_heads = self.n_heads,  
+            src_seq_length = self.src_seq_length,  
+            tgt_seq_length = self.tgt_seq_length,  
+            cond_prefix_frac = self.cond_prefix_frac,  
+            dropout = self.dropout,  
+            full_output = self.full_output,
+        )

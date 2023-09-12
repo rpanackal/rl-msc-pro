@@ -53,10 +53,10 @@ class VariationalTransformer(Transformer):
 
         # src_mask, tgt_mask = self.generate_mask(x_enc, x_dec)
         src_mask = self.create_src_mask(x_enc)
-        tgt_mask = self.create_tgt_mask(x_dec)
+        tgt_mask = self.create_tgt_mask(x_dec) if x_dec is not None else None
 
         # Encoder section
-        src_embedded = self.dropout(
+        src_embedded = self.dropout_layer(
             self.positional_encoding(self.encoder_embedding(x_enc))
         )
         enc_output = src_embedded
@@ -72,7 +72,7 @@ class VariationalTransformer(Transformer):
             return enc_output, mean, logvar, latent
 
         # Decoder section
-        tgt_embedded = self.dropout(
+        tgt_embedded = self.dropout_layer(
             self.positional_encoding(self.decoder_embedding(x_dec))
         )
         dec_output = tgt_embedded

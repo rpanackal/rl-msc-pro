@@ -3,7 +3,7 @@ import numpy as np
 from abc import ABC, abstractmethod
 import torch
 from typing import NamedTuple
-
+from pydantic import BaseModel
 class GenericAgent(ABC):
     def __init__(self, env):
         self.envs = env
@@ -55,7 +55,7 @@ class GenericAgent(ABC):
             
             print(f"Episode {episode}: Reward = {episode_reward}")
 
-class CompactStateTransitions(NamedTuple):
+class CompactStateTransitions(BaseModel):
     """A sequence of continuous transitions
     of compact state, action, reward and dones."""
 
@@ -63,3 +63,9 @@ class CompactStateTransitions(NamedTuple):
     actions: torch.Tensor
     rewards: torch.Tensor
     dones: torch.Tensor
+    next_states: torch.Tensor | None
+    loss: torch.Tensor | None
+    
+    model_config = {
+        "arbitrary_types_allowed": True
+    }

@@ -26,12 +26,12 @@ from torch.utils.tensorboard import SummaryWriter
 def main():
     # Configure experiment
     config = SupervisedLearnerConfig(
-        n_epochs=15,
-        model=TransformerConfig(embed_dim=16, n_enc_blocks=2, n_dec_blocks=1),
-        dataset=D4RLDatasetConfig(env_id="halfcheetah-expert-v2", split_length=10, normalize_observation=False),
+        n_epochs=50,
+        model=TransformerConfig(embed_dim=16, n_enc_blocks=2, n_dec_blocks=1, cond_prefix_frac=0),
+        dataset=D4RLDatasetConfig(env_id="halfcheetah-expert-v2", split_length=10, normalize_observation=True),
         dataloader=DataLoaderConfig(batch_size=64),
         optimizer=OptimizerConfig(
-            lr=1e-3, scheduler=CosineAnnealingLRConfig(min_lr=0.0001)
+            lr=1e-3, scheduler=CosineAnnealingLRConfig(min_lr=1e-5)
         ),
     )
     current_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -83,9 +83,10 @@ def main():
     )
 
     # Define Model
+    # ! Source reconstruction, tgt_feat_dim replaced with src_feat_dim
     model = Transformer(
         src_feat_dim=src_feat_dim,
-        tgt_feat_dim=tgt_feat_dim,
+        tgt_feat_dim=src_feat_dim,
         embed_dim=config.model.embed_dim,
         expanse_dim=config.model.expanse_dim,
         n_enc_blocks=config.model.n_enc_blocks,
@@ -145,44 +146,45 @@ def main():
     writer.close()
 
 
-# def custom_to_model(learner, batch):
-#     source, _, extras = batch
-
-#     args = []
-#     kwargs = {
-#         "x_enc": source.to(learner.device),
-#         "x_dec": None,
-#     }
-
-#     return args, kwargs
-
-
-# def custom_to_criterion(learner, batch, output):
-#     source, target, _ = batch
-#     target = source[:, :, :17]
-#     args = [output, target.to(learner.device)]
-#     kwargs = {}
-
-#     return args, kwargs
 def custom_to_model(learner, batch):
     source, _, extras = batch
 
     args = []
     kwargs = {
-        "x_enc": source.to(learner.device),
-        "x_dec": extras["actions"].to(learner.device),
+        "source": source.to(learner.device),
+        "dec_init": None,
     }
 
     return args, kwargs
 
 
 def custom_to_criterion(learner, batch, output):
-    _, target, _ = batch
-
+    source, _, _ = batch
+    target = source
     args = [output, target.to(learner.device)]
     kwargs = {}
 
     return args, kwargs
+
+# def custom_to_model(learner, batch):
+#     source, _, extras = batch
+
+#     args = []
+#     kwargs = {
+#         "x_enc": source.to(learner.device),
+#         "x_dec": extras["actions"].to(learner.device),
+#     }
+
+#     return args, kwargs
+
+
+# def custom_to_criterion(learner, batch, output):
+#     _, target, _ = batch
+
+#     args = [output, target.to(learner.device)]
+#     kwargs = {}
+
+#     return args, kwargs
 
 if __name__ == "__main__":
     main()

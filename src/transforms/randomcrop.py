@@ -10,7 +10,7 @@ class RandomCropSequence(nn.Module):
     parameter. If crop size is larger than sequence then, padding is done on the left of sequence
     if pad_if_needed is True.
     
-    She sequence is is expected to have [seq_length, feat_dim] shape, 
+    The sequence is expected to have [seq_length, feat_dim] shape, 
     where ... means an arbitrary number of leading dimensions, but if non-constant padding is used, 
     the input is expected to have at most 2 leading dimensions
 

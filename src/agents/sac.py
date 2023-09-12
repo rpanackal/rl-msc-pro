@@ -333,7 +333,7 @@ class SACAgent(GenericAgent):
 
                 # Compute the loss for alpha, aiming to keep policy entropy
                 # close to target_entropy.
-                alpha_loss = (-self.log_alpha * (log_pi + self.target_entropy)).mean()
+                alpha_loss = (-self.log_alpha.exp() * (log_pi + self.target_entropy)).mean()
 
                 # Perform backpropagation to update alpha.
                 self.alpha_optimizer.zero_grad()

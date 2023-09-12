@@ -198,8 +198,8 @@ class VariationalAutoformer(Autoformer):
 
     def forward(
         self,
-        x_enc,
-        x_dec: torch.FloatTensor | None = None,
+        source,
+        dec_init: torch.FloatTensor | None = None,
         src_mask=None,
         cross_mask=None,
         tgt_mask=None,
@@ -210,9 +210,9 @@ class VariationalAutoformer(Autoformer):
         Forward pass through the Variational Autoformer.
 
         Args:
-            x_enc (torch.FloatTensor): Input source sequence to encoder in feature space.
+            source (torch.FloatTensor): Input source sequence to encoder in feature space.
                 shape: (batch_size, src_seq_length, src_feat_dim)
-            x_dec (torch.FloatTensor): Conditioning input to decoder. Added to seasonal
+            dec_init (torch.FloatTensor): Conditioning input to decoder. Added to seasonal
                 initalizaiton along the target sequence length. The feature dimension needs
                 to be less than src_feat_dim.
                 shape: (batch_size, tgt_seq_length, some_dim)
@@ -237,27 +237,21 @@ class VariationalAutoformer(Autoformer):
                 shape: (batch_size, src_seq_length, embed_dim)
         """
         full_output = full_output or self.full_output
-        # print(f"x_enc type {type(x_enc)} shape {x_enc.shape}")
-        # print(f"x_dec type {type(x_dec)} shape {x_dec.shape if x_dec else None}")
 
         enc_output, mean, logvar = self.encoder(
-            self.positional_encoding(self.enc_embedding(x_enc)), src_mask
+            self.positional_encoding(self.enc_embedding(source)), src_mask
         )
-        # print(f"enc_output type {type(enc_output)} shape {enc_output.shape}")
-        # print(f"mean type {type(mean)} shape {mean.shape}")
+
 
         latent = self.encoder.variational_layer.reparameterize(
             mean, logvar
         )  # (batch_size, embed_dim)
-        # print(f"latent type {type(latent)} shape {latent.shape}")
 
         if enc_only:
             return enc_output, mean, logvar, latent
 
         # decoder initilialization section
-        seasonal_init, trend_init = self.decoder_initializer(x_enc, x_dec)
-        # print(f"seasonal_init type {type(seasonal_init)} shape {seasonal_init.shape}")
-        # print(f"trend_init type {type(trend_init)} shape {trend_init.shape}")
+        seasonal_init, trend_init = self.decoder_initializer(source, dec_init)
 
         seasonal_out, trend_out = self.decoder(
             seasonal_init=self.positional_encoding(self.dec_embedding(seasonal_init)),
@@ -267,8 +261,6 @@ class VariationalAutoformer(Autoformer):
             cross_mask=cross_mask,
             tgt_mask=tgt_mask,
         )
-        # print(f"seasonal_out type {type(seasonal_out)} shape {seasonal_out.shape}")
-        # print(f"trend_out type {type(trend_out)} shape {trend_out.shape}")
 
         dec_output = (trend_out + seasonal_out)[:, -self.tgt_seq_length :, :]
 

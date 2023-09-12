@@ -29,7 +29,7 @@ def main():
     # Configure experiment
     config = SupervisedLearnerConfig(
         n_epochs=15,
-        model=VariationalTransformerConfig(embed_dim=16, n_enc_blocks=2, n_dec_blocks=1),
+        model=VariationalTransformerConfig(embed_dim=16, n_enc_blocks=2, n_dec_blocks=1, kl_weight=1),
         dataset=D4RLDatasetConfig(env_id="halfcheetah-expert-v2", split_length=10, normalize_observation=False),
         dataloader=DataLoaderConfig(batch_size=64),
         optimizer=OptimizerConfig(
