@@ -9,16 +9,17 @@ import gym
 import numpy as np
 import torch
 
-from ..agents import CoreticAgentV3, SACwReprModel
+from ..agents import CoreticAgent
 from ..config import (
     ReinforcedLearnerConfig,
     CoreticAgentConfig,
     VariationalAutoformerConfig,
+    AutoformerConfig,
     OptimizerConfig,
 )
 from ..envs.utils import make_env
 from ..utils import set_torch_seed
-from ..assets import VariationalAutoformer
+from ..assets import VariationalAutoformer, Autoformer
 from ..envs.normalization import RMVNormalizeVecObservation
 from torch.utils.tensorboard import SummaryWriter
 
@@ -34,32 +35,34 @@ if __name__ == "__main__":
     config = ReinforcedLearnerConfig(
         agent=CoreticAgentConfig(
             name="pretrained-coretic",
-            repr_model=VariationalAutoformerConfig(
+            repr_model=AutoformerConfig(
                 embed_dim=16,
-                src_seq_length=5,
-                tgt_seq_length=5,
-                corr_factor=3,
-                kl_weight=0.7,
                 n_enc_blocks=2,
                 n_dec_blocks=1,
+                src_seq_length=50,
+                tgt_seq_length=50,
+                corr_factor=3,
+                # kl_weight=0.7,
                 expanse_dim=512,
+                cond_prefix_frac=0
             ),
             log_freq=100,
-            repr_model_optimizer=OptimizerConfig(lr=1e-6),
-            actor_optimizer=OptimizerConfig(lr=3e-4),
+            repr_model_optimizer=OptimizerConfig(lr=1e-4),
+            actor_optimizer=OptimizerConfig(lr=1e-4),
             critic_optimizer=OptimizerConfig(lr=1e-3),
             kappa=0.001,
             state_seq_length=2,
             target_network_frequency=2,
             policy_frequency=4,
-            repr_update_frequency=1,
             autotune=True,
             alpha=0.2
         ),
         total_timesteps=1e6,
-        learning_starts=7000,
+        learning_starts=10000,
         batch_size=64,
         normalize_observation=False,
+        device = torch.device("cuda:4" if torch.cuda.is_available() else "cpu"),
+        n_envs=4
     )
     current_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     config.name = f"{config.env_id}_{config.agent.name}_{current_datetime}"
@@ -93,9 +96,10 @@ if __name__ == "__main__":
     action_dim = np.prod(envs.single_action_space.shape)
 
     # Define Representation Model
-    model = VariationalAutoformer(
+    # * Important: Reconstruction of complete source
+    model = Autoformer(
         src_feat_dim=observation_dim + action_dim,
-        tgt_feat_dim=observation_dim,
+        tgt_feat_dim=observation_dim + action_dim,
         embed_dim=config.agent.repr_model.embed_dim,
         expanse_dim=config.agent.repr_model.expanse_dim,
         kernel_size=config.agent.repr_model.kernel_size,
@@ -113,7 +117,7 @@ if __name__ == "__main__":
 
     model = load_pretrained_model(
         model,
-        path="/home/rajanro/projects/rl-msc-pro/src/checkpoints/halfcheetah-expert-v2_variational-autoformer_2023-09-09_13-27-10/checkpoint.pth",
+        path="/home/rajanro/projects/rl-msc-pro/src/checkpoints/halfcheetah-expert-v2_autoformer_2023-09-15_21-51-19/checkpoint.pth",
     )
 
     # Setup trial logging
@@ -124,7 +128,7 @@ if __name__ == "__main__":
     with open(config_path, "w") as config_file:
         config_file.write(config.model_dump_json(exclude={"device"}))
 
-    agent = CoreticAgentV3(
+    agent = CoreticAgent(
         envs=envs,
         repr_model=model,
         repr_model_learning_rate=config.agent.repr_model_optimizer.lr,
@@ -145,11 +149,10 @@ if __name__ == "__main__":
         gamma=config.agent.gamma,
         policy_frequency=config.agent.policy_frequency,
         target_network_frequency=config.agent.target_network_frequency,
-        repr_update_frequency=config.agent.repr_update_frequency,
         tau=config.agent.tau,
         state_seq_length=config.agent.state_seq_length,
         kappa=config.agent.kappa,
-        kl_weight=config.agent.repr_model.kl_weight,
+        # kl_weight=config.agent.repr_model.kl_weight,
     )
 
     # agent.test(n_episodes=10)

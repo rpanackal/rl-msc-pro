@@ -96,9 +96,10 @@ def main():
     )
 
     # Define Model
+    # ! Source reconstruction, tgt_feat_dim replaced with src_feat_dim
     model = VariationalAutoformer(
         src_feat_dim=src_feat_dim,
-        tgt_feat_dim=tgt_feat_dim,
+        tgt_feat_dim=src_feat_dim,
         embed_dim=config.model.embed_dim,
         expanse_dim=config.model.expanse_dim,
         kernel_size=config.model.kernel_size,
@@ -170,25 +171,50 @@ def main():
     writer.close()
 
 
+# Soure reconstruction
+
 def custom_to_model(learner, batch):
     source, _, extras = batch
 
     args = []
     kwargs = {
         "source": source.to(learner.device),
-        "dec_init": extras["actions"].to(learner.device),
+        "dec_init": None,
     }
 
     return args, kwargs
 
 
 def custom_to_criterion(learner, batch, output):
-    _, target, _ = batch
-
+    source, _, _ = batch
+    
+    target = source
     args = [output, target.to(learner.device)]
     kwargs = {}
 
     return args, kwargs
+
+# Time series forecasting
+
+# def custom_to_model(learner, batch):
+#     source, _, extras = batch
+
+#     args = []
+#     kwargs = {
+#         "source": source.to(learner.device),
+#         "dec_init": extras["actions"].to(learner.device),
+#     }
+
+#     return args, kwargs
+
+
+# def custom_to_criterion(learner, batch, output):
+#     _, target, _ = batch
+
+#     args = [output, target.to(learner.device)]
+#     kwargs = {}
+
+#     return args, kwargs
 
 
 if __name__ == "__main__":

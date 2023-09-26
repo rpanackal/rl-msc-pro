@@ -23,8 +23,8 @@ class Actor(nn.Module):
         self.fc_logstd = nn.Linear(256, action_dim)
 
         # Action rescaling parameters, to ensure actions are within bounds
-        action_scale = (env.action_space.high - env.action_space.low) / 2.0
-        action_bias = (env.action_space.high + env.action_space.low) / 2.0
+        action_scale = (env.single_action_space.high - env.single_action_space.low) / 2.0
+        action_bias = (env.single_action_space.high + env.single_action_space.low) / 2.0
 
         self.register_buffer(
             "action_scale", torch.tensor(action_scale, dtype=torch.float32)

@@ -27,8 +27,9 @@ from ..external.Autoformer.models.Autoformer import Model as Autoformer
 def main():
     # Configure experiment
     dataset_config = D4RLDatasetConfig(
-        env_id="halfcheetah-medium-v2",
+        env_id="halfcheetah-expert-v2",
         split_length=10,
+        normalize_observation=False
     )
     dataloader_config = DataLoaderConfig(batch_size=128)
 
@@ -45,7 +46,7 @@ def main():
         split_length=dataset_config.split_length,
         src_features_keys=["observations", "actions"],
         tgt_features_keys=["observations"],
-        do_normalize=True,
+        do_normalize=dataset_config.normalize_observation,
     )
 
     train_dataset, valid_dataset, test_dataset = random_split(
@@ -57,27 +58,28 @@ def main():
         ],
     )
 
-    source, target, extras = train_dataset[0]
+    source, target, _ = train_dataset[0]
     src_seq_length, src_feat_dim = source.size()
     tgt_seq_length, tgt_feat_dim = target.size()
 
+    #! MOdified for source reconstruction task
     config = SupervisedLearnerConfig(
-        n_epochs=15,
+        n_epochs=50,
         model=OrigAutoformerConfig(
             factor=3,
-            d_model=32,
+            d_model=16,
             enc_in=src_feat_dim,
             dec_in=src_feat_dim,
-            c_out=tgt_feat_dim,
+            c_out=src_feat_dim,
             seq_len=src_seq_length,
-            label_len=int(src_seq_length * 0.3),
+            label_len=0,
             pred_len=tgt_seq_length,
             d_ff=512
         ),
         dataset=dataset_config,
         dataloader=dataloader_config,
         optimizer=OptimizerConfig(
-            lr=0.0001, scheduler=CosineAnnealingLRConfig(min_lr=0.00001)
+            lr=1e-3, scheduler=CosineAnnealingLRConfig(min_lr=1e-5)
         ),
     )
 
@@ -105,7 +107,7 @@ def main():
 
     # Define optimizer and criteria
     criterion = nn.MSELoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=config.optimizer.lr)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=config.optimizer.lr)
 
     max_iter = config.n_epochs * (len(train_dataset) / config.dataloader.batch_size)
     lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
@@ -150,26 +152,50 @@ def main():
     writer.close()
 
 
+# Soure reconstruction
+
 def custom_to_model(learner, batch):
-    source, target, extras = batch
+    source, _, extras = batch
 
     args = []
     kwargs = {
-        "x_enc": source.to(learner.device),
-        "x_dec": extras["actions"].to(learner.device)
-        # "x_dec": target.to(learner.device),
+        "source": source.to(learner.device),
+        "dec_init": None,
     }
 
     return args, kwargs
 
 
 def custom_to_criterion(learner, batch, output):
-    _, target, _ = batch
-
+    source, _, _ = batch
+    
+    target = source
     args = [output, target.to(learner.device)]
     kwargs = {}
 
     return args, kwargs
+
+# Time series forecasting
+
+# def custom_to_model(learner, batch):
+#     source, _, extras = batch
+
+#     args = []
+#     kwargs = {
+#         "source": source.to(learner.device),
+#         "dec_init": extras["actions"].to(learner.device),
+#     }
+
+#     return args, kwargs
+
+
+# def custom_to_criterion(learner, batch, output):
+#     _, target, _ = batch
+
+#     args = [output, target.to(learner.device)]
+#     kwargs = {}
+
+#     return args, kwargs
 
 
 if __name__ == "__main__":

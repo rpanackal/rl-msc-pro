@@ -52,7 +52,7 @@ class CoretranAgent(GenericAgent):
         self.src_seq_length = self.repr_model.src_seq_length
         self.tgt_seq_length = self.repr_model.tgt_seq_length
         self.embed_dim = self.repr_model.embed_dim
-        self.repr_dim = self.embed_dim * self.src_seq_length
+        self.repr_dim = self.embed_dim # * self.src_seq_length
 
         self.actor = Actor(envs, self.repr_dim).to(device)
         self.qf1 = SoftQNetwork(envs, self.repr_dim).to(device)
@@ -271,7 +271,7 @@ class CoretranAgent(GenericAgent):
             # )
             # self.update_actor(samples, state_transitions)
 
-            self.update_actor_v2(state_transitions)
+            self.update_actor(state_transitions)
 
         # Update the Target Networks
         # Only update the target networks periodically, as defined by target_network_frequency
@@ -349,9 +349,10 @@ class CoretranAgent(GenericAgent):
             actions=samples.actions[:, start:end, :],
             rewards=samples.rewards[:, start:end],
             dones=samples.dones[:, start:end],
-            loss = None
+            loss=None,
         )
 
+        self.repr_model.train()
         # Loop over state_seq_len source sequences from start.
         for t in range(start, end):
             # Get source, target and conditional for current time step
@@ -364,14 +365,13 @@ class CoretranAgent(GenericAgent):
             # conditional = conditionals[:, t : t + self.tgt_seq_length, :]
 
             # 3. Produce state representations and future observations
-            self.repr_model.train()
-
+            # * dec_init not None
             dec_output, enc_output = self.repr_model(source, full_output=True)
 
             # 5. Compute representation model loss
             mse_loss = F.mse_loss(dec_output, source)
             # kl_loss = -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp())
-            total_loss = mse_loss  # + self.kl_weight * kl_loss
+            total_loss = mse_loss # + self.kl_weight * kl_loss
 
             # # 6. Perform backpropagation to update the representation learning model.
             # self.repr_optimizer.zero_grad()
@@ -384,9 +384,10 @@ class CoretranAgent(GenericAgent):
                     "losses/repr_loss", total_loss.item(), self.global_step
                 )
 
-            state_transitions.states[:, t - start, :] = torch.flatten(
-                enc_output, start_dim=1, end_dim=2
-            )
+            # state_transitions.states[:, t - start, :] = torch.flatten(
+            #     enc_output, start_dim=1, end_dim=2
+            # )
+            state_transitions.states[:, t - start, :] = enc_output[:, -1, :]
             state_transitions.loss = total_loss
             # 4. Store final element along sequence dimension of enc_output as the state s_t,
             # Map times steps from source to time steps in trajectory.
@@ -397,10 +398,10 @@ class CoretranAgent(GenericAgent):
                     # for corresponding time step
                     source[:, -1, -self.action_dim :] = 0
                     enc_output = self.repr_model_target(source, enc_only=True)
-                    state_transitions.next_states[:, t - start, :] = torch.flatten(
-                        enc_output, start_dim=1, end_dim=2
-                    )
-
+                    # state_transitions.next_states[:, t - start, :] = torch.flatten(
+                    #     enc_output, start_dim=1, end_dim=2
+                    # )
+                    state_transitions.next_states[:, t - start, :] = enc_output[:, -1, :]
         # ? Should padding be done on target to get state sequence for all observations?
         return state_transitions
 
@@ -476,7 +477,7 @@ class CoretranAgent(GenericAgent):
                 "losses/qf_loss", qf_loss.item() / 2.0, self.global_step
             )
 
-    def update_actor_v2(self, state_transitions: CompactStateTransitions):
+    def update_actor(self, state_transitions: CompactStateTransitions):
         """
         Updates the actor network using the given state transitions.
 
@@ -532,7 +533,9 @@ class CoretranAgent(GenericAgent):
 
                 # Compute the loss for alpha, aiming to keep policy entropy
                 # close to target_entropy.
-                alpha_loss = (-self.log_alpha.exp() * (log_pi + self.target_entropy)).mean()
+                alpha_loss = (
+                    -self.log_alpha.exp() * (log_pi + self.target_entropy)
+                ).mean()
 
                 # Perform backpropagation to update alpha.
                 self.alpha_optimizer.zero_grad()
@@ -549,132 +552,6 @@ class CoretranAgent(GenericAgent):
                 "losses/actor_loss", actor_loss.item(), self.global_step
             )
             self.writer.add_scalar("alpha", self.alpha, self.global_step)
-
-            if self.autotune:
-                self.writer.add_scalar(
-                    "losses/alpha_loss", alpha_loss.item(), self.global_step
-                )
-
-    def update_actor(self, samples: EpisodicBufferSamples):
-        """
-        V2: states are constructed again, but only one state and not
-            a sequence
-
-        Updates the actor network using the given samples.
-
-        Args:
-            samples (EpisodicBufferSamples): The batch of experience sequences sampled
-                from the replay buffer. Each sequence contains observations, actions, rewards,
-                and done flags.
-
-        Returns:
-            None: The method updates the actor network and optionally the temperature parameter
-                in-place.
-        """
-        # 1. Construct source for all state_seq_len time steps
-        # Padd zeros to the left of sequences.
-        zeroes = torch.zeros(
-            (
-                self.batch_size,
-                self.src_seq_length - 1,
-                self.observation_dim + self.action_dim,
-            )
-        ).to(self.device)
-        sources = torch.cat(
-            [
-                zeroes,
-                # Concatenate actions and observations along feat_dim
-                torch.cat(
-                    [
-                        samples.observations[:, : self.src_seq_length, :],
-                        samples.actions[:, : self.src_seq_length, :],
-                    ],
-                    dim=2,
-                ),
-            ],
-            dim=1,
-        )
-
-        # 3. Compute index to start sampling source from.
-        start_atmost = self.src_seq_length - 1
-        start_atleast = 0
-        # With a probability  1 - eta, start is start_atmost, else,
-        # start is uniformly from anywhere in 0..start_atmost
-        t = (
-            torch.randint(start_atleast, start_atmost + 1, (1,)).item()
-            if torch.rand(1).item() < self.kappa
-            else (start_atmost)
-        )
-
-        # Get source, target and conditional for current time step
-        source = sources[:, t : t + self.src_seq_length, :].clone()
-        # During online interaction, actions are sampled and not available for state calculation
-        # for corresponding time step
-        source[:, -1, -self.action_dim :] = 0
-
-        # 3. Produce state representations and future observations
-        self.repr_model.eval()
-        with torch.no_grad():
-            enc_output, mean, logvar, latent = self.repr_model(source, enc_only=True)
-
-        # 4. Store final element along sequence dimension of enc_output as the state s_t,
-        state = enc_output[:, -1, :]
-
-        # START: Policy freq loop
-        for _ in range(self.policy_frequency):
-            # 4. Sample Actions:
-            # Using the current policy, sample actions and their log
-            # probabilities from the current batch of states.
-            pi, log_pi, _ = self.sample_action(state)
-
-            # 5. Compute the Q-values of the sampled actions using both the
-            # Q-functions (Q1 and Q2).
-            qf1_pi = self.qf1(state, pi)
-            qf2_pi = self.qf2(state, pi)
-
-            # Take the minimum Q-value among the two Q-functions to improve
-            # robustness.
-            min_qf_pi = torch.min(qf1_pi, qf2_pi).view(-1)
-
-            # 6. Compute Actor Loss:
-            # The actor aims to maximize this quantity, which corresponds
-            # to maximizing Q-value and entropy.
-            actor_loss = (self.alpha * log_pi - min_qf_pi).mean()
-
-            # 7. Perform backpropagation to update the actor network.
-            # self.repr_optimizer.zero_grad()
-            self.actor_optimizer.zero_grad()
-            actor_loss.backward()
-            self.actor_optimizer.step()
-            # self.repr_optimizer.step()
-
-            # 8. Update Temperature (Optional):
-            # If self.autotune is True, the temperature parameter alpha is
-            # also learned.
-            if self.autotune:
-                # Sample actions again (not strictly needed, could reuse above)
-                with torch.no_grad():
-                    _, log_pi, _ = self.sample_action(state)
-
-                # Compute the loss for alpha, aiming to keep policy entropy
-                # close to target_entropy.
-                alpha_loss = (-self.log_alpha * (log_pi + self.target_entropy)).mean()
-
-                # Perform backpropagation to update alpha.
-                self.alpha_optimizer.zero_grad()
-                alpha_loss.backward()
-                self.alpha_optimizer.step()
-
-                # Update the alpha value.
-                self.alpha = self.log_alpha.exp().item()
-        # END: Policy freq loop
-
-        # Log Actor loss and alpha of last state in sequence every self.log_freq steps.
-        if self.global_step % self.log_freq == 0 and self.writer:
-            self.writer.add_scalar(
-                "losses/actor_loss", actor_loss.item(), self.global_step
-            )
-            self.writer.add_scalar("losses/alpha", self.alpha, self.global_step)
 
             if self.autotune:
                 self.writer.add_scalar(
@@ -755,8 +632,8 @@ class CoretranAgent(GenericAgent):
         with torch.no_grad():
             enc_output = self.repr_model_target(source, enc_only=True)
 
-        state = torch.flatten(enc_output, start_dim=1, end_dim=2)
-        # state = enc_output[:, -1, :]
+        # state = torch.flatten(enc_output, start_dim=1, end_dim=2)
+        state = enc_output[:, -1, :]
         return state
 
     def train(
@@ -961,4 +838,4 @@ if __name__ == "__main__":
 
     envs = gym.make_env(env_id, seed)
 
-    agent = CoreticAgentV3()
+    agent = CoretranAgent()

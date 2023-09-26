@@ -91,6 +91,7 @@ if __name__ == "__main__":
     action_dim = np.prod(envs.single_action_space.shape)
 
     # Define Representation Model
+    # ! Important: Reconstruction of complete source
     model = Transformer(
         src_feat_dim=observation_dim + action_dim,
         tgt_feat_dim=observation_dim + action_dim,

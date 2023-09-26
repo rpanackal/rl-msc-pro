@@ -5,6 +5,7 @@ from ..layers import (
     PositionWiseFeedForward,
     MultiHeadAttention,
     ContinuousEmbedding,
+    AttentionPooling
 )
 import math
 

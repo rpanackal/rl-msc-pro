@@ -27,9 +27,13 @@ def main():
     # Configure experiment
     config = SupervisedLearnerConfig(
         n_epochs=50,
-        model=TransformerConfig(embed_dim=16, n_enc_blocks=2, n_dec_blocks=1, cond_prefix_frac=0),
-        dataset=D4RLDatasetConfig(env_id="halfcheetah-expert-v2", split_length=10, normalize_observation=True),
-        dataloader=DataLoaderConfig(batch_size=64),
+        model=TransformerConfig(
+            embed_dim=16, n_enc_blocks=2, n_dec_blocks=1, cond_prefix_frac=0
+        ),
+        dataset=D4RLDatasetConfig(
+            env_id="halfcheetah-expert-v2", split_length=10, normalize_observation=True
+        ),
+        dataloader=DataLoaderConfig(batch_size=128),
         optimizer=OptimizerConfig(
             lr=1e-3, scheduler=CosineAnnealingLRConfig(min_lr=1e-5)
         ),
@@ -83,7 +87,7 @@ def main():
     )
 
     # Define Model
-    # ! Source reconstruction, tgt_feat_dim replaced with src_feat_dim
+    # * Source reconstruction, tgt_feat_dim replaced with src_feat_dim
     model = Transformer(
         src_feat_dim=src_feat_dim,
         tgt_feat_dim=src_feat_dim,
@@ -146,6 +150,9 @@ def main():
     writer.close()
 
 
+# Soure reconstruction
+
+# * dec_init not none anymore
 def custom_to_model(learner, batch):
     source, _, extras = batch
 
@@ -160,19 +167,23 @@ def custom_to_model(learner, batch):
 
 def custom_to_criterion(learner, batch, output):
     source, _, _ = batch
+
     target = source
     args = [output, target.to(learner.device)]
     kwargs = {}
 
     return args, kwargs
 
+
+# Time series forecasting
+
 # def custom_to_model(learner, batch):
 #     source, _, extras = batch
 
 #     args = []
 #     kwargs = {
-#         "x_enc": source.to(learner.device),
-#         "x_dec": extras["actions"].to(learner.device),
+#         "source": source.to(learner.device),
+#         "dec_init": extras["actions"].to(learner.device),
 #     }
 
 #     return args, kwargs
@@ -185,6 +196,7 @@ def custom_to_criterion(learner, batch, output):
 #     kwargs = {}
 
 #     return args, kwargs
+
 
 if __name__ == "__main__":
     main()

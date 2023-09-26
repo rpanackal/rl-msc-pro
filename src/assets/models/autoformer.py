@@ -538,9 +538,9 @@ class Autoformer(nn.Module):
         """_summary_
 
         Args:
-            x_enc (torch.FloatTensor): Input source sequence to encoder in feature space.
+            source (torch.FloatTensor): Input source sequence to encoder in feature space.
                 shape: (batch_size, src_seq_length, src_feat_dim)
-            x_dec (torch.FloatTensor): Conditioning input to decoder. Added to seasonal initalizaiton
+            dec_init (torch.FloatTensor): Conditioning input to decoder. Added to seasonal initalizaiton
                 along the target sequence length. The feature dimension needs to be less than src_feat_dim.
                 shape: (batch_size, tgt_seq_length, some_dim)
         Returns:

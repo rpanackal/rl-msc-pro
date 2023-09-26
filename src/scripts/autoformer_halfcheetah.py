@@ -26,16 +26,21 @@ from torch.utils.tensorboard import SummaryWriter
 def main():
     # Configure experiment
     config = SupervisedLearnerConfig(
-        n_epochs=15,
+        n_epochs=40,
         model=AutoformerConfig(
-            embed_dim=64, expanse_dim=512, n_enc_blocks=2, n_dec_blocks=1, corr_factor=3
+            embed_dim=16,
+            expanse_dim=512,
+            n_enc_blocks=2,
+            n_dec_blocks=1,
+            corr_factor=3,
+            cond_prefix_frac=0,
         ),
         dataset=D4RLDatasetConfig(
-            env_id="halfcheetah-medium-v2", split_length=10, normalize_observation=False
+            env_id="halfcheetah-expert-v2", split_length=100, normalize_observation=False
         ),
         dataloader=DataLoaderConfig(batch_size=128),
         optimizer=OptimizerConfig(
-            lr=0.0001, scheduler=CosineAnnealingLRConfig(min_lr=0.00001)
+            lr=1e-3, scheduler=CosineAnnealingLRConfig(min_lr=1e-5)
         ),
     )
     current_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -89,7 +94,7 @@ def main():
     # Define Model
     model = Autoformer(
         src_feat_dim=src_feat_dim,
-        tgt_feat_dim=tgt_feat_dim,
+        tgt_feat_dim=src_feat_dim,
         embed_dim=config.model.embed_dim,
         expanse_dim=config.model.expanse_dim,
         kernel_size=config.model.kernel_size,
@@ -151,25 +156,52 @@ def main():
     writer.close()
 
 
+# Soure reconstruction
+
+# * dec_init not none anymore
 def custom_to_model(learner, batch):
     source, _, extras = batch
 
     args = []
     kwargs = {
-        "x_enc": source.to(learner.device),
-        "x_dec": extras["actions"].to(learner.device),
+        "source": source.to(learner.device),
+        "dec_init": None,
     }
 
     return args, kwargs
 
 
 def custom_to_criterion(learner, batch, output):
-    _, target, _ = batch
-
+    source, _, _ = batch
+    
+    target = source
     args = [output, target.to(learner.device)]
     kwargs = {}
 
     return args, kwargs
+
+# Time series forecasting
+
+# def custom_to_model(learner, batch):
+#     source, _, extras = batch
+
+#     args = []
+#     kwargs = {
+#         "source": source.to(learner.device),
+#         "dec_init": extras["actions"].to(learner.device),
+#     }
+
+#     return args, kwargs
+
+
+# def custom_to_criterion(learner, batch, output):
+#     _, target, _ = batch
+
+#     args = [output, target.to(learner.device)]
+#     kwargs = {}
+
+#     return args, kwargs
+
 
 
 if __name__ == "__main__":

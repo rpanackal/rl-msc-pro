@@ -256,7 +256,7 @@ class VariationalAutoformer(Autoformer):
         seasonal_out, trend_out = self.decoder(
             seasonal_init=self.positional_encoding(self.dec_embedding(seasonal_init)),
             trend_init=trend_init,
-            enc_output=latent,
+            enc_output=enc_output,
             #latent=latent,
             cross_mask=cross_mask,
             tgt_mask=tgt_mask,
