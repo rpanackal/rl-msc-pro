@@ -1,4 +1,3 @@
-# import gymnasium as gym
 import d4rl  # Import required to register environments, you may need to also import the submodule
 import torch
 import torch.nn as nn
@@ -8,9 +7,9 @@ from torch.utils.data import DataLoader, random_split
 from datetime import datetime
 import gym
 
-from ..assets import Transformer
+from ..assets import Autoformer
 from ..config import (
-    TransformerConfig,
+    AutoformerConfig,
     D4RLDatasetConfig,
     SupervisedLearnerConfig,
     OptimizerConfig,
@@ -26,12 +25,17 @@ from torch.utils.tensorboard import SummaryWriter
 def main():
     # Configure experiment
     config = SupervisedLearnerConfig(
-        n_epochs=50,
-        model=TransformerConfig(
-            embed_dim=16, n_enc_blocks=2, n_dec_blocks=1, cond_prefix_frac=0
+        n_epochs=40,
+        model=AutoformerConfig(
+            embed_dim=16,
+            expanse_dim=512,
+            n_enc_blocks=2,
+            n_dec_blocks=1,
+            corr_factor=3,
+            cond_prefix_frac=0,
         ),
         dataset=D4RLDatasetConfig(
-            env_id="halfcheetah-expert-v2", split_length=10, normalize_observation=True
+            env_id="halfcheetah-expert-v2", split_length=100, normalize_observation=False
         ),
         dataloader=DataLoaderConfig(batch_size=128),
         optimizer=OptimizerConfig(
@@ -87,12 +91,13 @@ def main():
     )
 
     # Define Model
-    # * Source reconstruction, tgt_feat_dim replaced with src_feat_dim
-    model = Transformer(
+    model = Autoformer(
         src_feat_dim=src_feat_dim,
         tgt_feat_dim=src_feat_dim,
         embed_dim=config.model.embed_dim,
         expanse_dim=config.model.expanse_dim,
+        kernel_size=config.model.kernel_size,
+        corr_factor=config.model.corr_factor,
         n_enc_blocks=config.model.n_enc_blocks,
         n_dec_blocks=config.model.n_dec_blocks,
         n_heads=config.model.n_heads,
@@ -167,13 +172,12 @@ def custom_to_model(learner, batch):
 
 def custom_to_criterion(learner, batch, output):
     source, _, _ = batch
-
+    
     target = source
     args = [output, target.to(learner.device)]
     kwargs = {}
 
     return args, kwargs
-
 
 # Time series forecasting
 
@@ -196,6 +200,7 @@ def custom_to_criterion(learner, batch, output):
 #     kwargs = {}
 
 #     return args, kwargs
+
 
 
 if __name__ == "__main__":

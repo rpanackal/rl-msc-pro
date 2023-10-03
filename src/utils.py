@@ -2,6 +2,9 @@ import collections
 import numpy as np
 import random
 import torch
+import carl
+import typing
+import gymnasium as gymz
 
 def inspect_head_d4rl_env(env, n_steps=1):
     """Inspect head of D4RL registered environments
@@ -160,3 +163,16 @@ def flatten_dict(d, parent_key='', sep='.'):
         else:
             items[new_key] = v
     return items
+
+def is_vector_env(env):
+    return hasattr(env, 'num_envs') or getattr(env, 'is_vector_env', False)
+
+def get_observation_dim(env):
+    space = getattr(env, "single_observation_space", env.observation_space)
+
+    if space is None:
+        ValueError("Observation space not found in environment.")
+    
+    if isinstance(space, gymz.spaces.dict.Dict):
+        return np.prod(space["obs"].shape)
+    return np.prod(space.shape)

@@ -17,10 +17,10 @@ from ..config import (
     AutoformerConfig,
     OptimizerConfig,
 )
-from ..envs.utils import make_env
+from ..envs.core import make_env
 from ..utils import set_torch_seed
 from ..assets import VariationalAutoformer, Autoformer
-from ..envs.normalization import RMVNormalizeVecObservation
+from ..envs.wrappers.normalization import RMVNormalizeVecObservation
 from torch.utils.tensorboard import SummaryWriter
 
 
@@ -73,7 +73,7 @@ if __name__ == "__main__":
     envs = gym.vector.SyncVectorEnv(
         [
             make_env(
-                env_id=config.env_id,
+                env=config.env_id,
                 seed=config.random_seed,
                 idx=i,
                 capture_video=config.capture_video,

@@ -7,7 +7,7 @@ import numpy as np
 import torch
 
 from ..config import ReinforcedLearnerConfig, SACAgentConfig
-from ..envs.utils import make_env
+from ..envs.core import make_env
 from ..utils import set_torch_seed
 
 def test_episodic_buffer(envs, config):

@@ -5,3 +5,5 @@ src/checkpoints
 src/external
 .vscode
 CARL
+.logs
+argdantic

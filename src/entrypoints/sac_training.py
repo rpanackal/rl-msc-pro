@@ -1,38 +1,29 @@
 import time
 from datetime import datetime
 
-import gym
 import numpy as np
-import torch
 from ..agents import SACAgent
 from ..config import ReinforcedLearnerConfig, SACAgentConfig, OptimizerConfig
-from ..envs.utils import make_env
+from ..envs.core import make_env
 from ..utils import set_torch_seed
-from ..envs.normalization import RMVNormalizeVecObservation, EMANormalizeVecObservation
+from ..envs.wrappers.normalization import RMVNormalizeVecObservation, EMANormalizeVecObservation
 from torch.utils.tensorboard import SummaryWriter
 
 if __name__ == "__main__":
-    config = ReinforcedLearnerConfig(agent=SACAgentConfig(), total_timesteps=1e6)
+    config = ReinforcedLearnerConfig(batch_size=64, normalize_observation=True, agent=SACAgentConfig(), total_timesteps=1e6)
     current_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     config.name = f"{config.env_id}_{config.agent.name}_{current_datetime}"
 
     set_torch_seed(config.random_seed)
 
     # Here only 1 environment
-    envs = gym.vector.SyncVectorEnv(
-        [
-            make_env(
-                env_id=config.env_id,
-                seed=config.random_seed,
-                idx=i,
-                capture_video=config.capture_video,
-                run_name=config.name,
-            )
-            for i in range(config.n_envs)
-        ]
-    )
-    envs = RMVNormalizeVecObservation(
-        envs, is_observation_scaling=config.normalize_observation
+    envs = make_env(
+        env=config.env_id,
+        seed=config.random_seed,
+        n_envs=config.n_envs,
+        capture_video=config.capture_video,
+        run_name=config.name,
+        normalize_observation=config.normalize_observation
     )
 
     print("Number of environments: ", envs.num_envs)

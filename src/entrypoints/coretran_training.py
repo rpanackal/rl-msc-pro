@@ -2,10 +2,8 @@
 Training logic for coretic V3 agent that used a pretrained frozen variational autoencoder
 as represetnation model.
 """
-import time
 from datetime import datetime
 
-import gym
 import numpy as np
 import torch
 
@@ -16,13 +14,13 @@ from ..config import (
     TransformerConfig,
     VariationalTransformerConfig,
     OptimizerConfig,
+    OrigAutoformerConfig
 )
-from ..envs.utils import make_env
+from ..envs.core import make_env
 from ..utils import set_torch_seed
 from ..assets import Transformer, VariationalTransformer
-from ..envs.normalization import RMVNormalizeVecObservation
-from torch.utils.tensorboard import SummaryWriter
 
+from torch.utils.tensorboard import SummaryWriter
 
 def load_pretrained_model(model, path):
     checkpoint = torch.load(path)
@@ -30,8 +28,7 @@ def load_pretrained_model(model, path):
     print("Loaded pretrained model")
     return model
 
-
-if __name__ == "__main__":
+def main():
     config = ReinforcedLearnerConfig(
         agent=CoretranAgentConfig(
             repr_model=TransformerConfig(
@@ -40,7 +37,7 @@ if __name__ == "__main__":
                 n_dec_blocks=1,
                 src_seq_length=5,
                 tgt_seq_length=5,
-                cond_prefix_frac=0
+                cond_prefix_frac=0,
             ),
             log_freq=100,
             repr_model_optimizer=OptimizerConfig(lr=1e-4),
@@ -50,14 +47,15 @@ if __name__ == "__main__":
             state_seq_length=2,
             target_network_frequency=2,
             policy_frequency=4,
-            autotune=True,
-            alpha=0.2
+            autotune=False,
+            alpha=0.2,
         ),
         total_timesteps=1e6,
         learning_starts=7000,
         batch_size=64,
         normalize_observation=True,
-        device = torch.device("cuda:3" if torch.cuda.is_available() else "cpu"),
+        n_envs=1,
+        device=torch.device("cuda:4" if torch.cuda.is_available() else "cpu"),
     )
     current_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     config.name = f"{config.env_id}_{config.agent.name}_{current_datetime}"
@@ -65,21 +63,13 @@ if __name__ == "__main__":
     set_torch_seed(config.random_seed)
 
     # Here only 1 environment
-    envs = gym.vector.SyncVectorEnv(
-        [
-            make_env(
-                env_id=config.env_id,
-                seed=config.random_seed,
-                idx=i,
-                capture_video=config.capture_video,
-                run_name=config.name,
-            )
-            for i in range(config.n_envs)
-        ]
-    )
-
-    envs = RMVNormalizeVecObservation(
-        envs, is_observation_scaling=config.normalize_observation
+    envs = make_env(
+        env=config.env_id,
+        seed=config.random_seed,
+        n_envs=config.n_envs,
+        capture_video=config.capture_video,
+        run_name=config.name,
+        normalize_observation=config.normalize_observation
     )
 
     print("Device in use: ", config.device)
@@ -110,7 +100,7 @@ if __name__ == "__main__":
 
     model = load_pretrained_model(
         model,
-        path="/home/rajanro/projects/rl-msc-pro/src/checkpoints/halfcheetah-expert-v2_transformer_2023-09-12_16-48-49/checkpoint.pth",
+        path="/home/rajanro/projects/rl-msc-pro/src/checkpoints/halfcheetah-expert-v2_transformer_2023-09-30_17-35-23/checkpoint.pth",
     )
 
     # Setup trial logging
@@ -151,3 +141,6 @@ if __name__ == "__main__":
     # agent.test(n_episodes=10)
 
     envs.close()
+
+if __name__ == "__main__":
+    main()

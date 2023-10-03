@@ -1,10 +1,10 @@
 import time
 
-import gym
+import gymnasium
 import numpy as np
 import torch
 import torch.nn.functional as F
-from gym.vector import VectorEnv
+from gymnasium.vector import VectorEnv
 from stable_baselines3.common.buffers import ReplayBuffer, ReplayBufferSamples
 from torch import optim
 from torch.utils.tensorboard import SummaryWriter
@@ -16,7 +16,7 @@ from .core import GenericAgent
 class SACAgent(GenericAgent):
     def __init__(
         self,
-        envs: gym.vector.SyncVectorEnv | gym.Env,
+        envs: gymnasium.vector.SyncVectorEnv | gymnasium.Env,
         critic_learning_rate: float,
         actor_learning_rate: float,
         buffer_size: int,
@@ -25,10 +25,10 @@ class SACAgent(GenericAgent):
         log_freq: int = 100,
     ):
         assert isinstance(
-            envs.single_action_space, gym.spaces.Box
+            envs.single_action_space, gymnasium.spaces.Box
         ), "only continuous action space is supported"
 
-        if hasattr(envs, "num_envs"):
+        if getattr(envs, "is_vector_env", None):
             envs.single_observation_space.dtype = np.float32
             self.observation_dim = np.prod(envs.single_observation_space.shape)
             self.action_dim = np.prod(envs.single_action_space.shape)
@@ -46,11 +46,11 @@ class SACAgent(GenericAgent):
         self.qf2_target = SoftQNetwork(envs, self.observation_dim).to(device)
         self.qf1_target.load_state_dict(self.qf1.state_dict())
         self.qf2_target.load_state_dict(self.qf2.state_dict())
-        self.q_optimizer = optim.Adam(
+        self.q_optimizer = optim.AdamW(
             list(self.qf1.parameters()) + list(self.qf2.parameters()),
             lr=critic_learning_rate,
         )
-        self.actor_optimizer = optim.Adam(
+        self.actor_optimizer = optim.AdamW(
             list(self.actor.parameters()), lr=actor_learning_rate
         )
 
@@ -60,7 +60,7 @@ class SACAgent(GenericAgent):
             envs.single_action_space,
             device,
             n_envs=self.n_envs,
-            handle_timeout_termination=True,
+            handle_timeout_termination=False,
         )
 
         self.device = device
@@ -111,7 +111,7 @@ class SACAgent(GenericAgent):
             ).item()
             self.log_alpha = torch.zeros(1, requires_grad=True, device=self.device)
             self.alpha = self.log_alpha.exp().item()
-            self.alpha_optimizer = optim.Adam(
+            self.alpha_optimizer = optim.AdamW(
                 [self.log_alpha], lr=self.critic_learning_rate
             )
         else:
@@ -181,9 +181,9 @@ class SACAgent(GenericAgent):
         # at the end of an episode and real terminal observation is in infos.
         # For more info: https://stable-baselines3.readthedocs.io/en/master/guide/vec_envs.html
         real_next_obs = next_obs.copy()
-        for idx, d in enumerate(dones):
-            if d:
-                real_next_obs[idx] = infos[idx]["terminal_observation"]
+        for idx, done in enumerate(dones):
+            if done:  # if the sub-environment has terminated
+                real_next_obs[idx] = infos["final_observation"][idx]
         # Add any preprocessing code here
         return obs, real_next_obs, actions, rewards, dones, infos
 
@@ -204,6 +204,7 @@ class SACAgent(GenericAgent):
         """
         # Add new experience to the episodic replay buffer
         # Assuming experience is a tuple: (obs, real_next_obs, actions, rewards, dones, infos)
+
         self.replay_buffer.add(*experience)
 
         if self.global_step < self.learning_starts:
@@ -348,7 +349,7 @@ class SACAgent(GenericAgent):
             self.writer.add_scalar(
                 "losses/actor_loss", actor_loss.item(), self.global_step
             )
-            self.writer.add_scalar("losses/alpha", self.alpha, self.global_step)
+            self.writer.add_scalar("alpha", self.alpha, self.global_step)
 
             if self.autotune:
                 self.writer.add_scalar(
@@ -412,7 +413,7 @@ class SACAgent(GenericAgent):
         start_time = time.time()
 
         # Reset the environment and get initial observation
-        obs = self.envs.reset()
+        obs, _ = self.envs.reset()
         for _ in range(total_timesteps):
             # Sample actions
             actions, _, _ = self.sample_action(obs, to_numpy=True)
@@ -431,20 +432,22 @@ class SACAgent(GenericAgent):
             obs = next_obs
 
             # Log episodic information if available
-            for info in infos:
-                if "episode" in info.keys():
-                    print(
-                        f"global_step={self.global_step}, episodic_return={info['episode']['r']}"
+            # Episodic information from any one of the environments is sufficient
+            if "episode" in infos:
+                print(
+                    f"global_step={self.global_step}, episodic_return={infos['episode']['r'][0]}"
+                )
+                if self.writer:
+                    self.writer.add_scalar(
+                        "train/episodic_return",
+                        infos["episode"]["r"][0],
+                        self.global_step,
                     )
-                    if self.writer:
-                        self.writer.add_scalar(
-                            "train/episodic_return", info["episode"]["r"], self.global_step
-                        )
-                        self.writer.add_scalar(
-                            "train/episodic_length", info["episode"]["l"], self.global_step
-                        )
-                    # Episodic information from any one of the environments is sufficient
-                    break
+                    self.writer.add_scalar(
+                        "train/episodic_length",
+                        infos["episode"]["l"][0],
+                        self.global_step,
+                    )
 
             # Log steps per second (SPS) every self.log_freq steps
             if self.global_step % self.log_freq == 0:
@@ -478,7 +481,7 @@ class SACAgent(GenericAgent):
         episodic_returns = [0] * self.envs.num_envs
 
         # Reset the environments to get an initial observation state
-        obs = self.envs.reset()
+        obs, _ = self.envs.reset()
 
         while min(episode_count) < n_episodes:
             # Sample actions from the trained policy
@@ -541,6 +544,6 @@ if __name__ == "__main__":
     seed = 42
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-    envs = gym.make_env(env_id, seed)
+    envs = gymnasium.make_env(env_id, seed)
 
     agent = SACAgent()

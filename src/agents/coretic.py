@@ -1,10 +1,10 @@
 import time
 
-import gym
+import gymnasium
 import numpy as np
 import torch
 import torch.nn.functional as F
-from gym.vector import VectorEnv
+from gymnasium.vector import VectorEnv
 from torch import nn, optim
 from torch.utils.tensorboard import SummaryWriter
 
@@ -41,7 +41,7 @@ class CoreticAgent(GenericAgent):
 
     def __init__(
         self,
-        envs: gym.vector.SyncVectorEnv | gym.Env,
+        envs: gymnasium.vector.SyncVectorEnv | gymnasium.Env,
         repr_model: Autoformer,
         repr_model_learning_rate: float,
         critic_learning_rate: float,
@@ -51,7 +51,7 @@ class CoreticAgent(GenericAgent):
         writer: SummaryWriter | None = None,
         log_freq: int = 100,
     ):
-        assert isinstance(envs.single_action_space, gym.spaces.Box), ValueError(
+        assert isinstance(envs.single_action_space, gymnasium.spaces.Box), ValueError(
             "only continuous action space is supported"
         )
         if isinstance(envs, VectorEnv):
@@ -867,6 +867,6 @@ if __name__ == "__main__":
     seed = 42
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-    envs = gym.make_env(env_id, seed)
+    envs = gymnasium.make_env(env_id, seed)
 
     agent = CoreticAgent()

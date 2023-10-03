@@ -1,10 +1,10 @@
 import time
 
-import gym
+import gymnasium
 import numpy as np
 import torch
 import torch.nn.functional as F
-from gym.vector import VectorEnv
+from gymnasium.vector import VectorEnv
 from torch import nn, optim
 from torch.utils.tensorboard import SummaryWriter
 
@@ -12,7 +12,6 @@ from ..assets import Transformer
 from ..assets.models import Actor, SoftQNetwork
 from ..data.buffer import EpisodicBuffer, EpisodicBufferSamples
 from .core import GenericAgent, CompactStateTransitions
-from ..meters.timer import Timer
 
 
 class CoretranAgent(GenericAgent):
@@ -20,7 +19,7 @@ class CoretranAgent(GenericAgent):
 
     def __init__(
         self,
-        envs: gym.vector.SyncVectorEnv | gym.Env,
+        envs: gymnasium.vector.SyncVectorEnv | gymnasium.Env,
         repr_model: Transformer,
         repr_model_learning_rate: float,
         critic_learning_rate: float,
@@ -30,10 +29,10 @@ class CoretranAgent(GenericAgent):
         writer: SummaryWriter | None = None,
         log_freq: int = 100,
     ):
-        assert isinstance(envs.single_action_space, gym.spaces.Box), ValueError(
-            "only continuous action space is supported"
+        assert isinstance(envs.single_action_space, gymnasium.spaces.Box), ValueError(
+            f"only continuous action space is supported, given {envs.single_action_space}"
         )
-        if isinstance(envs, VectorEnv):
+        if getattr(envs, "is_vector_env", None):
             envs.single_observation_space.dtype = np.float32
             self.observation_dim = np.prod(envs.single_observation_space.shape)
             self.action_dim = np.prod(envs.single_action_space.shape)
@@ -52,7 +51,7 @@ class CoretranAgent(GenericAgent):
         self.src_seq_length = self.repr_model.src_seq_length
         self.tgt_seq_length = self.repr_model.tgt_seq_length
         self.embed_dim = self.repr_model.embed_dim
-        self.repr_dim = self.embed_dim # * self.src_seq_length
+        self.repr_dim = self.embed_dim * self.src_seq_length
 
         self.actor = Actor(envs, self.repr_dim).to(device)
         self.qf1 = SoftQNetwork(envs, self.repr_dim).to(device)
@@ -62,15 +61,16 @@ class CoretranAgent(GenericAgent):
         self.qf1_target.load_state_dict(self.qf1.state_dict())
         self.qf2_target.load_state_dict(self.qf2.state_dict())
 
-        self.repr_optimizer = optim.Adam(
+        self.repr_optimizer = optim.AdamW(
             list(self.repr_model.parameters()),
             lr=repr_model_learning_rate,
+            weight_decay=1e-5
         )
-        self.q_optimizer = optim.Adam(
+        self.q_optimizer = optim.AdamW(
             list(self.qf1.parameters()) + list(self.qf2.parameters()),
             lr=critic_learning_rate,
         )
-        self.actor_optimizer = optim.Adam(
+        self.actor_optimizer = optim.AdamW(
             list(self.actor.parameters()), lr=actor_learning_rate
         )
 
@@ -146,7 +146,7 @@ class CoretranAgent(GenericAgent):
             ).item()
             self.log_alpha = torch.zeros(1, requires_grad=True, device=self.device)
             self.alpha = self.log_alpha.exp().item()
-            self.alpha_optimizer = optim.Adam(
+            self.alpha_optimizer = optim.AdamW(
                 [self.log_alpha], lr=self.critic_learning_rate
             )
         else:
@@ -218,10 +218,14 @@ class CoretranAgent(GenericAgent):
         # When using vectorized environment, the environments are automatically reset
         # at the end of an episode and real terminal observation is in infos.
         # For more info: https://stable-baselines3.readthedocs.io/en/master/guide/vec_envs.html
+        # Create a copy of next_obs to avoid modifying the original one
         real_next_obs = next_obs.copy()
-        for idx, d in enumerate(dones):
-            if d:
-                real_next_obs[idx] = infos[idx]["terminal_observation"]
+
+        # Loop over each sub-environment using the 'dones' array
+        for idx, done in enumerate(dones):
+            if done:  # if the sub-environment has terminated
+                real_next_obs[idx] = infos["final_observation"][idx]
+
         # Add any preprocessing code here
         return obs, real_next_obs, actions, rewards, dones, infos
 
@@ -365,13 +369,12 @@ class CoretranAgent(GenericAgent):
             # conditional = conditionals[:, t : t + self.tgt_seq_length, :]
 
             # 3. Produce state representations and future observations
-            # * dec_init not None
             dec_output, enc_output = self.repr_model(source, full_output=True)
 
             # 5. Compute representation model loss
             mse_loss = F.mse_loss(dec_output, source)
             # kl_loss = -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp())
-            total_loss = mse_loss # + self.kl_weight * kl_loss
+            total_loss = mse_loss  # + self.kl_weight * kl_loss
 
             # # 6. Perform backpropagation to update the representation learning model.
             # self.repr_optimizer.zero_grad()
@@ -384,10 +387,10 @@ class CoretranAgent(GenericAgent):
                     "losses/repr_loss", total_loss.item(), self.global_step
                 )
 
-            # state_transitions.states[:, t - start, :] = torch.flatten(
-            #     enc_output, start_dim=1, end_dim=2
-            # )
-            state_transitions.states[:, t - start, :] = enc_output[:, -1, :]
+            state_transitions.states[:, t - start, :] = torch.flatten(
+                enc_output, start_dim=1, end_dim=2
+            )
+            # state_transitions.states[:, t - start, :] = enc_output[:, -1, :]
             state_transitions.loss = total_loss
             # 4. Store final element along sequence dimension of enc_output as the state s_t,
             # Map times steps from source to time steps in trajectory.
@@ -398,10 +401,12 @@ class CoretranAgent(GenericAgent):
                     # for corresponding time step
                     source[:, -1, -self.action_dim :] = 0
                     enc_output = self.repr_model_target(source, enc_only=True)
-                    # state_transitions.next_states[:, t - start, :] = torch.flatten(
-                    #     enc_output, start_dim=1, end_dim=2
-                    # )
-                    state_transitions.next_states[:, t - start, :] = enc_output[:, -1, :]
+                    state_transitions.next_states[:, t - start, :] = torch.flatten(
+                        enc_output, start_dim=1, end_dim=2
+                    )
+                    # state_transitions.next_states[:, t - start, :] = enc_output[
+                    #     :, -1, :
+                    # ]
         # ? Should padding be done on target to get state sequence for all observations?
         return state_transitions
 
@@ -454,7 +459,7 @@ class CoretranAgent(GenericAgent):
             qf_loss = qf1_loss + qf2_loss
 
             total_loss = qf_loss + state_transitions.loss
-            
+
             # 5. Update critic model
             self.repr_optimizer.zero_grad()
             self.q_optimizer.zero_grad()
@@ -632,8 +637,8 @@ class CoretranAgent(GenericAgent):
         with torch.no_grad():
             enc_output = self.repr_model_target(source, enc_only=True)
 
-        # state = torch.flatten(enc_output, start_dim=1, end_dim=2)
-        state = enc_output[:, -1, :]
+        state = torch.flatten(enc_output, start_dim=1, end_dim=2)
+        # state = enc_output[:, -1, :]
         return state
 
     def train(
@@ -695,7 +700,7 @@ class CoretranAgent(GenericAgent):
         start_time = time.time()
 
         # Reset the environment and get initial observation
-        curr_ob = self.envs.reset()
+        curr_ob, _ = self.envs.reset()
 
         for _ in range(total_timesteps):
             # Sample actions
@@ -720,24 +725,22 @@ class CoretranAgent(GenericAgent):
             curr_ob = next_ob
 
             # Log episodic information if available
-            for info in info:
-                if "episode" in info.keys():
-                    print(
-                        f"global_step={self.global_step}, episodic_return={info['episode']['r']}"
+            # Episodic information from any one of the environments is sufficient
+            if "episode" in info:
+                print(
+                    f"global_step={self.global_step}, episodic_return={info['episode']['r'][0]}"
+                )
+                if self.writer:
+                    self.writer.add_scalar(
+                        "train/episodic_return",
+                        info["episode"]["r"][0],
+                        self.global_step,
                     )
-                    if self.writer:
-                        self.writer.add_scalar(
-                            "train/episodic_return",
-                            info["episode"]["r"],
-                            self.global_step,
-                        )
-                        self.writer.add_scalar(
-                            "train/episodic_length",
-                            info["episode"]["l"],
-                            self.global_step,
-                        )
-                    # Episodic information from any one of the environments is sufficient
-                    break
+                    self.writer.add_scalar(
+                        "train/episodic_length",
+                        info["episode"]["l"][0],
+                        self.global_step,
+                    )
 
             # Log steps per second (SPS) every self.log_freq steps
             if self.global_step % self.log_freq == 0:
@@ -772,7 +775,7 @@ class CoretranAgent(GenericAgent):
         episodic_returns = [0] * self.envs.num_envs
 
         # Reset the environments to get an initial observation state
-        obs = self.envs.reset()
+        obs, _ = self.envs.reset()
 
         while min(episode_count) < n_episodes:
             # Sample actions from the trained policy
@@ -836,6 +839,6 @@ if __name__ == "__main__":
     seed = 42
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-    envs = gym.make_env(env_id, seed)
+    envs = gymnasium.make_env(env_id, seed)
 
     agent = CoretranAgent()

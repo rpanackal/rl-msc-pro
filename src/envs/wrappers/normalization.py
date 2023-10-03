@@ -1,26 +1,27 @@
 import numpy as np
-import gym
-from gym.vector import VectorEnvWrapper
-from gym.wrappers import NormalizeObservation
+import gymnasium as gymz
+from gymnasium.vector import VectorEnvWrapper
+from src.utils import is_vector_env
 
-
-class RMVNormalizeVecObservation(VectorEnvWrapper):
+class RMVNormalizeVecObservation(gymz.Wrapper):
     """
-    A wrapper for normalizing observations in a vectorized Gym environment.
+    A wrapper for normalizing observations in a vectorized gymz environment.
     It normalizes observations using a running mean and standard deviation.
     """
 
     def __init__(
         self,
         env,
-        epsilon=1e-8,
         is_observation_scaling=True,
+        epsilon=1e-8,
     ):
         """
         Initialize the wrapper by setting the environment to be wrapped
         and initializing mean and variance to None.
         """
-        super(RMVNormalizeVecObservation, self).__init__(env)
+        assert is_vector_env(env), "The env wrapped must be vectorized."
+        super().__init__(env)
+
         # Running mean and variance of observations
         self.mean = np.zeros(self.single_observation_space.shape, dtype=np.float64)
         self.var = np.ones(self.single_observation_space.shape, dtype=np.float64)
@@ -29,16 +30,17 @@ class RMVNormalizeVecObservation(VectorEnvWrapper):
         self.epsilon = epsilon
         self._is_observation_scaling = is_observation_scaling
 
-    def reset(self):
+    def reset(self, *args, **kwargs):
         """
         Reset the environment and update normalization statistics.
         """
-        observations = self.env.reset()
+        observations, infos = self.env.reset(*args, **kwargs)
         self.update_stats(observations)
         return (
             self.normalize_observations(observations)
             if self._is_observation_scaling
-            else observations
+            else observations,
+            infos,
         )
 
     def step(self, actions):
@@ -46,14 +48,16 @@ class RMVNormalizeVecObservation(VectorEnvWrapper):
         Step the environment, get new observations,
         and update normalization statistics.
         """
-        observations, rewards, dones, infos = super().step(actions)
+        observations, rewards, terminated, truncated, infos = super().step(actions)
+
         self.update_stats(observations)
         return (
             self.normalize_observations(observations)
             if self._is_observation_scaling
             else observations,
             rewards,
-            dones,
+            terminated,
+            truncated,
             infos,
         )
 
@@ -113,7 +117,7 @@ class RMVNormalizeVecObservation(VectorEnvWrapper):
 
 class EMANormalizeVecObservation(VectorEnvWrapper):
     """
-    A wrapper for normalizing observations in a vectorized Gym environment.
+    A wrapper for normalizing observations in a vectorized gymz environment.
     It normalizes observations using Exponential Moving Average (EMA).
     """
 
@@ -169,6 +173,6 @@ class EMANormalizeVecObservation(VectorEnvWrapper):
 
 
 if __name__ == "__main__":
-    env = gym.make("HalfCheetah-v2")
+    env = gymz.make("HalfCheetah-v2")
     env = RMVNormalizeVecObservation(env, is_observation_scaling=False)
     print(env.is_observation_scaling)

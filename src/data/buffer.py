@@ -1,13 +1,11 @@
 from typing import Union, NamedTuple, Any
 
-import gym
+import gymnasium
 import numpy as np
 import torch as th
-from gym import spaces
-from stable_baselines3.common.buffers import BaseBuffer, ReplayBufferSamples
-from stable_baselines3.common.type_aliases import RolloutBufferSamples
-from stable_baselines3.common.vec_env import VecNormalize
-from ..envs.normalization import RMVNormalizeVecObservation
+from gymnasium import spaces
+from stable_baselines3.common.buffers import BaseBuffer
+from ..envs.wrappers.normalization import RMVNormalizeVecObservation
 
 
 class EpisodicBufferSamples(NamedTuple):
@@ -118,7 +116,7 @@ class EpisodicBuffer(BaseBuffer):
         self,
         batch_size: int,
         desired_length: int | None = None,
-        env: RMVNormalizeVecObservation | gym.Env | None = None,
+        env: RMVNormalizeVecObservation | gymnasium.Env | None = None,
     ) -> EpisodicBufferSamples:
         """
         Samples a random batch of episodes from the episodic buffer.
@@ -282,7 +280,7 @@ class EpisodicBuffer(BaseBuffer):
 
     def get_last_episode(
         self,
-        env: RMVNormalizeVecObservation | gym.Env | None = None,
+        env: RMVNormalizeVecObservation | gymnasium.Env | None = None,
     ):
         """
         Retrieves the last episode for each environment in the buffer.
@@ -334,7 +332,7 @@ class EpisodicBuffer(BaseBuffer):
         )
 
     def normalize_obs(
-        self, obs: np.ndarray, env: RMVNormalizeVecObservation | gym.Env | None = None
+        self, obs: np.ndarray, env: RMVNormalizeVecObservation | gymnasium.Env | None = None
     ):
         """The environment that is wrapped by RMVNormalizeVecObservation and
         is not scaling observations while sampling from environment will be
@@ -343,7 +341,7 @@ class EpisodicBuffer(BaseBuffer):
         Args:
             obs (_type_): _description_
                 shape: (seq_len, obs_dim)
-            env (RMVNormalizeVecObservation | gym.Env | None): If None, no scaling is done.
+            env (RMVNormalizeVecObservation | gymnasium.Env | None): If None, no scaling is done.
 
         Returns:
             np.ndarray: Normalized observations.
