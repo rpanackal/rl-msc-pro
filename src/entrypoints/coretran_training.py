@@ -14,7 +14,7 @@ from ..config import (
     TransformerConfig,
     VariationalTransformerConfig,
     OptimizerConfig,
-    OrigAutoformerConfig
+    BufferConfig
 )
 from ..envs.core import make_env
 from ..utils import set_torch_seed
@@ -45,10 +45,11 @@ def main():
             critic_optimizer=OptimizerConfig(lr=1e-3),
             kappa=0.001,
             state_seq_length=2,
-            target_network_frequency=2,
-            policy_frequency=4,
-            autotune=False,
+            target_network_frequency=4,
+            policy_frequency=2,
+            autotune=True,
             alpha=0.2,
+            # buffer=BufferConfig(buffer_size=3e5)
         ),
         total_timesteps=1e6,
         learning_starts=7000,
@@ -98,10 +99,10 @@ def main():
 
     print(model)
 
-    model = load_pretrained_model(
-        model,
-        path="/home/rajanro/projects/rl-msc-pro/src/checkpoints/halfcheetah-expert-v2_transformer_2023-09-30_17-35-23/checkpoint.pth",
-    )
+    # model = load_pretrained_model(
+    #     model,
+    #     path="/home/rajanro/projects/rl-msc-pro/src/checkpoints/halfcheetah-expert-v2_transformer_2023-10-04_21-00-38/configuration.json",
+    # )
 
     # Setup trial logging
     log_dir = config.checkpoint_dir / config.name

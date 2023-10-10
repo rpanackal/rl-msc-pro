@@ -6,6 +6,7 @@ import torch as th
 from gymnasium import spaces
 from stable_baselines3.common.buffers import BaseBuffer
 from ..envs.wrappers.normalization import RMVNormalizeVecObservation
+from src.utils import get_observation_dim
 
 
 class EpisodicBufferSamples(NamedTuple):
@@ -14,6 +15,7 @@ class EpisodicBufferSamples(NamedTuple):
     actions: th.Tensor | list[np.ndarray]
     rewards: th.Tensor | list[np.ndarray]
     dones: th.Tensor | list[np.ndarray]
+    context: th.Tensor | list[np.ndarray] | None
 
 
 class EpisodicBuffer(BaseBuffer):
@@ -43,16 +45,25 @@ class EpisodicBuffer(BaseBuffer):
         device: Union[th.device, str] = "cpu",
         n_envs: int = 1,
         optimize_memory_usage: bool = False,
+        include_context: bool = False,
     ):
         super(EpisodicBuffer, self).__init__(
             buffer_size, observation_space, action_space, device, n_envs=n_envs
         )
 
         self.observations, self.actions, self.rewards = None, None, None
-        self.next_observations, self.dones = None, None
+        self.next_observations, self.dones, self.contexts = None, None, None
 
         self.optimize_memory_usage = optimize_memory_usage
+        self.include_context = include_context
         self.overflow = False
+
+        # To handle carl environment observation space
+        if isinstance(self.obs_shape, dict) and "obs" in self.obs_shape:
+            self.obs_shape = self.obs_shape["obs"]
+
+        if self.include_context:
+            self.context_dim = np.prod(self.obs_shape["context"].shape)
         self.reset()
 
     def reset(self) -> None:
@@ -69,6 +80,12 @@ class EpisodicBuffer(BaseBuffer):
             self.next_observations = np.zeros(
                 (self.buffer_size, self.n_envs) + self.obs_shape, dtype=np.float32
             )
+
+        if self.include_context:
+            self.contexts = np.zeros(
+                (self.buffer_size, self.n_envs, self.context_dim), dtype=np.float32
+            )
+
         super(EpisodicBuffer, self).reset()
 
     def add(
@@ -79,6 +96,7 @@ class EpisodicBuffer(BaseBuffer):
         reward: np.ndarray,
         done: np.ndarray,
         infos: list[dict[str, Any]] = None,
+        context: np.ndarray | None = None,
     ) -> None:
         """
         Adds a new experience tuple to the episodic buffer.
@@ -106,6 +124,11 @@ class EpisodicBuffer(BaseBuffer):
         if not self.optimize_memory_usage:
             self.next_observations[self.pos] = np.array(next_obs).copy()
 
+        if self.include_context:
+            if context is None:
+                raise ValueError("Context missing for trasition.")
+            self.contexts[self.pos] = np.array(context).copy()
+
         self.pos += 1
 
         if self.pos == self.buffer_size:
@@ -126,21 +149,21 @@ class EpisodicBuffer(BaseBuffer):
             desired_length: Optional desired length for each sampled episode.
             env: Optional environment for observation normalization.
 
-        Returns: 
+        Returns:
             (EpisodicBufferSamples): An EpisodicBufferSamples object containing the sampled episodes.
         """
         # Step 1: Compute episode lengths and starting indices.
-        dones = self.dones.copy() if self.full else self.dones[:self.pos].copy()
-        
+        dones = self.dones.copy() if self.full else self.dones[: self.pos].copy()
+
         # Make sure while flattening dones, we will not join episodes from
-        # different environments in buffer and treat episodes from 
+        # different environments in buffer and treat episodes from
         # different cycles differently.
         #   - Assume last transition of progressing episode is done
         dones[self.pos - 1, :] = 1
         #   - Assume last transition in buffer is done, if full.
         if self.full:
-             dones[-1, :] = 1
-        
+            dones[-1, :] = 1
+
         dones_indices = np.flatnonzero(self.swap_and_flatten(dones))
         # We account for starting episode in flattened buffer
         if dones_indices[0] != 0:
@@ -217,6 +240,10 @@ class EpisodicBuffer(BaseBuffer):
             next_observations = self.swap_and_flatten(self.next_observations)
             sampled_next_obs = []
 
+        if self.include_context:
+            contexts = self.swap_and_flatten(self.contexts)
+            sampled_contexts = []
+
         # Initialize a counter for starts and ends
         counter = 0
 
@@ -253,6 +280,9 @@ class EpisodicBuffer(BaseBuffer):
                     )
                 )
 
+            if self.include_context:
+                sampled_contexts.append(contexts[effective_start:effective_end].copy())
+
             # Increment the counter
             counter += 1
 
@@ -268,6 +298,9 @@ class EpisodicBuffer(BaseBuffer):
             if not self.optimize_memory_usage:
                 sampled_next_obs = self.to_torch(np.array(sampled_next_obs))
 
+            if self.include_context:
+                sampled_contexts = self.to_torch(np.array(sampled_contexts))
+
         return EpisodicBufferSamples(
             observations=sampled_obs,
             next_observations=sampled_next_obs
@@ -276,6 +309,7 @@ class EpisodicBuffer(BaseBuffer):
             actions=sampled_actions,
             rewards=sampled_rewards,
             dones=sampled_dones,
+            context=sampled_contexts if self.include_context else None,
         )
 
     def get_last_episode(
@@ -285,17 +319,22 @@ class EpisodicBuffer(BaseBuffer):
         """
         Retrieves the last episode for each environment in the buffer.
 
-        Args: 
+        Args:
             env: Optional environment for observation normalization.
 
         Returns:
             An EpisodicBufferSamples object containing the last episodes.
         """
         observations = []
-        next_observations = []
         actions = []
         rewards = []
         dones = []
+
+        if not self.optimize_memory_usage:
+            next_observations = []
+
+        if self.include_context:
+            contexts = []
 
         for env_no in range(self.n_envs):
             # Compute start of progressing episode
@@ -303,7 +342,7 @@ class EpisodicBuffer(BaseBuffer):
             # We account for starting episode in flattened buffer
             if len(dones_indices) == 0 or dones_indices[0] != 0:
                 dones_indices = np.hstack((np.array([-1]), dones_indices))
-    
+
             start_last_ep = dones_indices[-1] + 1 if len(dones_indices) else 0
 
             # TODO: What happens if the last entry in the buffer was a done transitions ?
@@ -321,6 +360,9 @@ class EpisodicBuffer(BaseBuffer):
                     self.next_observations[start_last_ep : self.pos, env_no]
                 )
 
+            if self.include_context:
+                contexts.append(self.contexts[start_last_ep : self.pos, env_no])
+
         return EpisodicBufferSamples(
             observations=observations,
             next_observations=next_observations
@@ -329,10 +371,13 @@ class EpisodicBuffer(BaseBuffer):
             actions=actions,
             rewards=rewards,
             dones=dones,
+            context=contexts if self.include_context else None,
         )
 
     def normalize_obs(
-        self, obs: np.ndarray, env: RMVNormalizeVecObservation | gymnasium.Env | None = None
+        self,
+        obs: np.ndarray,
+        env: RMVNormalizeVecObservation | gymnasium.Env | None = None,
     ):
         """The environment that is wrapped by RMVNormalizeVecObservation and
         is not scaling observations while sampling from environment will be
@@ -347,9 +392,8 @@ class EpisodicBuffer(BaseBuffer):
             np.ndarray: Normalized observations.
         """
         # TODO: Observations here is for a sequence of time steps.
-        if (
-            isinstance(env, RMVNormalizeVecObservation)
-            and not env.is_observation_scaling
+        if isinstance(env, RMVNormalizeVecObservation) and getattr(
+            env, "is_observation_scaling", False
         ):
             return env.normalize_observations(obs)
         return obs

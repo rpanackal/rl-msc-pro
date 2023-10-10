@@ -173,6 +173,13 @@ def get_observation_dim(env):
     if space is None:
         ValueError("Observation space not found in environment.")
     
-    if isinstance(space, gymz.spaces.dict.Dict):
+    if getattr(env, 'is_carl_env', False):
         return np.prod(space["obs"].shape)
     return np.prod(space.shape)
+
+def get_action_dim(env):
+    space = getattr(env, "single_action_space", env.observation_space)
+
+    if space is None:
+        ValueError("Action space space not found in environment.")
+    return np.prod(env.single_action_space.shape)

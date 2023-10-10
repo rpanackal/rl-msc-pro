@@ -7,3 +7,5 @@ src/external
 CARL
 .logs
 argdantic
+d4rl
+jax

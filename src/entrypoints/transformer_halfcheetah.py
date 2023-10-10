@@ -26,12 +26,12 @@ from torch.utils.tensorboard import SummaryWriter
 def main():
     # Configure experiment
     config = SupervisedLearnerConfig(
-        n_epochs=50,
+        n_epochs=25,
         model=TransformerConfig(
             embed_dim=16, n_enc_blocks=2, n_dec_blocks=1, cond_prefix_frac=0
         ),
         dataset=D4RLDatasetConfig(
-            env_id="halfcheetah-expert-v2", split_length=10, normalize_observation=True
+            env_id="halfcheetah-random-v2", split_length=10, normalize_observation=True
         ),
         dataloader=DataLoaderConfig(batch_size=128),
         optimizer=OptimizerConfig(

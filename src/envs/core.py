@@ -2,8 +2,8 @@ import gym
 import gymnasium as gymz
 from gymnasium.wrappers.compatibility import EnvCompatibility
 from .wrappers.normalization import RMVNormalizeVecObservation
-from carl.envs.brax.carl_brax_env import CARLBraxEnv
 from shimmy.openai_gym_compatibility import _convert_space
+from .wrappers.compatibility import EnvProjectCompatibility, VecEnvProjectCompatibility
 
 
 def make_env(
@@ -28,7 +28,6 @@ def make_env(
     Returns:
         gymz.vector.SyncVectorEnv: The wrapped vectorized environment.
     """
-
     def single_env(idx: int) -> gymz.Env:
         if isinstance(env, str):
             # Attempt to create env from gymz
@@ -42,8 +41,6 @@ def make_env(
         else:
             if isinstance(env, gym.Env):
                 e = gymz.make("GymV26Environment-v0", env=env)
-            # elif isinstance(env, CARLBraxEnv):
-            #     e = gymz.make("GymV26Environment-v0", env=env)
             elif isinstance(env, gymz.Env):
                 e = env
             else:
@@ -55,20 +52,19 @@ def make_env(
             e.action_space.seed(seed + idx)
         if hasattr(e, "observation_space"):
             e.observation_space.seed(seed + idx)
-        print(e.observation_space)
-        if hasattr(e,'action_space') and isinstance(e.action_space, gym.Space):
-            e.action_space = _convert_space(e.action_space)
 
         # Video capture
         if capture_video and idx == 0:
             e = gymz.wrappers.RecordVideo(e, f"videos/{run_name}")
+        e = EnvProjectCompatibility(e)
         return e
-   
+
     envs = gymz.vector.SyncVectorEnv([lambda: single_env(i) for i in range(n_envs)])
+    envs = VecEnvProjectCompatibility(envs)
     envs = gymz.wrappers.RecordEpisodeStatistics(envs)    
     envs = RMVNormalizeVecObservation(envs, is_observation_scaling=normalize_observation)
     envs = gymz.wrappers.StepAPICompatibility(envs, output_truncation_bool=False)
-    
+    envs = gymz.wrappers.PassiveEnvChecker(envs)
     return envs
 
 if __name__ == "__main__":

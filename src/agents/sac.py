@@ -11,7 +11,9 @@ from torch.utils.tensorboard import SummaryWriter
 
 from ..assets.models import Actor, SoftQNetwork
 from .core import GenericAgent
-
+from ..utils import get_observation_dim
+import os
+from pathlib import PurePath
 
 class SACAgent(GenericAgent):
     def __init__(
@@ -24,18 +26,26 @@ class SACAgent(GenericAgent):
         writer: SummaryWriter | None = None,
         log_freq: int = 100,
     ):
-        assert isinstance(
-            envs.single_action_space, gymnasium.spaces.Box
-        ), "only continuous action space is supported"
+        assert isinstance(envs.single_action_space, gymnasium.spaces.Box), ValueError(
+           f"only continuous action space is supported, given {envs.single_action_space}"
+        )
 
         if getattr(envs, "is_vector_env", None):
-            envs.single_observation_space.dtype = np.float32
-            self.observation_dim = np.prod(envs.single_observation_space.shape)
+            if envs.is_carl_env:
+                envs.single_observation_space['obs'].dtype = np.float32
+                envs.single_observation_space['context'].dtype = np.float32
+            else:
+                envs.single_observation_space.dtype = np.float32
+            self.observation_dim = get_observation_dim(envs)
             self.action_dim = np.prod(envs.single_action_space.shape)
             self.n_envs = envs.num_envs
         else:
-            envs.observation_space.dtype = np.float32
-            self.observation_dim = np.prod(envs.observation_space.shape)
+            if envs.is_carl_env:
+                envs.observation_space['obs'].dtype = np.float32
+                envs.observation_space['context'].dtype = np.float32
+            else:
+                envs.observation_space.dtype = np.float32
+            self.observation_dim = get_observation_dim(envs)
             self.action_dim = np.prod(envs.action_space.shape)
             self.n_envs = 1
 
@@ -46,17 +56,17 @@ class SACAgent(GenericAgent):
         self.qf2_target = SoftQNetwork(envs, self.observation_dim).to(device)
         self.qf1_target.load_state_dict(self.qf1.state_dict())
         self.qf2_target.load_state_dict(self.qf2.state_dict())
-        self.q_optimizer = optim.AdamW(
+        self.q_optimizer = optim.Adam(
             list(self.qf1.parameters()) + list(self.qf2.parameters()),
             lr=critic_learning_rate,
         )
-        self.actor_optimizer = optim.AdamW(
+        self.actor_optimizer = optim.Adam(
             list(self.actor.parameters()), lr=actor_learning_rate
         )
 
         self.replay_buffer = ReplayBuffer(
             buffer_size,
-            envs.single_observation_space,
+            envs.single_observation_space['obs'] if envs.is_carl_env else envs.single_observation_space,
             envs.single_action_space,
             device,
             n_envs=self.n_envs,
@@ -111,7 +121,7 @@ class SACAgent(GenericAgent):
             ).item()
             self.log_alpha = torch.zeros(1, requires_grad=True, device=self.device)
             self.alpha = self.log_alpha.exp().item()
-            self.alpha_optimizer = optim.AdamW(
+            self.alpha_optimizer = optim.Adam(
                 [self.log_alpha], lr=self.critic_learning_rate
             )
         else:
@@ -160,15 +170,6 @@ class SACAgent(GenericAgent):
 
             # Use the actor model to sample actions, log_probs, and squashed_means
             actions, log_probs, squashed_means = self.actor.get_action(observations)
-
-            # Convert Tensor to NumPy array if to_numpy is True.
-            if to_numpy:
-                return (
-                    actions.detach().cpu().numpy(),
-                    log_probs.detach().cpu().numpy(),
-                    squashed_means.detach().cpu().numpy(),
-                )
-
         return actions, log_probs, squashed_means
 
     def preprocess_experience(self, experience):
@@ -183,7 +184,10 @@ class SACAgent(GenericAgent):
         real_next_obs = next_obs.copy()
         for idx, done in enumerate(dones):
             if done:  # if the sub-environment has terminated
-                real_next_obs[idx] = infos["final_observation"][idx]
+                if self.envs.is_carl_env:
+                    real_next_obs[idx] = infos["final_observation"][idx]["obs"]
+                else:
+                    real_next_obs[idx] = infos["final_observation"][idx]
         # Add any preprocessing code here
         return obs, real_next_obs, actions, rewards, dones, infos
 
@@ -334,7 +338,9 @@ class SACAgent(GenericAgent):
 
                 # Compute the loss for alpha, aiming to keep policy entropy
                 # close to target_entropy.
-                alpha_loss = (-self.log_alpha.exp() * (log_pi + self.target_entropy)).mean()
+                alpha_loss = (
+                    -self.log_alpha.exp() * (log_pi + self.target_entropy)
+                ).mean()
 
                 # Perform backpropagation to update alpha.
                 self.alpha_optimizer.zero_grad()
@@ -413,23 +419,31 @@ class SACAgent(GenericAgent):
         start_time = time.time()
 
         # Reset the environment and get initial observation
-        obs, _ = self.envs.reset()
+        curr_obs, _ = self.envs.reset()
+        if self.envs.is_carl_env:
+            curr_obs, context = curr_obs["obs"], curr_obs["context"]
         for _ in range(total_timesteps):
             # Sample actions
-            actions, _, _ = self.sample_action(obs, to_numpy=True)
+            with torch.no_grad():
+                actions, _, _ = self.sample_action(curr_obs, to_numpy=True)
+            actions = (
+                actions.cpu().numpy() if not isinstance(actions, np.ndarray) else actions
+            )
 
             # Execute actions in the environment
             next_obs, rewards, dones, infos = self.envs.step(actions)
+            if self.envs.is_carl_env:
+                next_obs, context = next_obs["obs"], next_obs["context"]
 
             # Prepare experience for the agent's update
-            experience = (obs, next_obs, actions, rewards, dones, infos)
+            experience = (curr_obs, next_obs, actions, rewards, dones, infos)
             experience = self.preprocess_experience(experience)
 
             # Update the agent
             self.update_agent(experience)
 
             # Update the current observation
-            obs = next_obs
+            curr_obs = next_obs
 
             # Log episodic information if available
             # Episodic information from any one of the environments is sufficient
@@ -481,15 +495,18 @@ class SACAgent(GenericAgent):
         episodic_returns = [0] * self.envs.num_envs
 
         # Reset the environments to get an initial observation state
-        obs, _ = self.envs.reset()
+        curr_obs, _ = self.envs.reset()
+        if self.envs.is_carl_env:
+            curr_obs, context = curr_obs["obs"], curr_obs["context"]
 
         while min(episode_count) < n_episodes:
             # Sample actions from the trained policy
-            actions, _, _ = self.sample_action(obs, to_numpy=True)
+            actions, _, _ = self.sample_action(curr_obs, to_numpy=True)
 
             # Execute the actions in the environments
             next_obs, rewards, dones, _ = self.envs.step(actions)
-
+            if self.envs.is_carl_env:
+                next_obs, context = next_obs["obs"], next_obs["context"]
             # Update the episode rewards
             for i, (reward, done) in enumerate(zip(rewards, dones)):
                 episodic_returns[i] += reward
@@ -511,7 +528,7 @@ class SACAgent(GenericAgent):
                     episode_count[i] += 1
 
             # Update the current observations
-            obs = next_obs
+            curr_obs = next_obs
 
         # Calculate and log the average returns over all test episodes for each environment
         for i, returns in enumerate(all_returns):
@@ -522,6 +539,15 @@ class SACAgent(GenericAgent):
             if self.writer:
                 self.writer.add_scalar(f"test/avg_return", avg_return, i + 1)
 
+    def save_checkpoint(self, checkpoint_dir: PurePath):
+        os.makedirs(checkpoint_dir, exist_ok=True)
+
+        checkpoint_path = checkpoint_dir / "checkpoint.pth"
+        checkpoint = {
+            'actor_state_dict': self.actor.state_dict()
+        }
+
+        torch.save(checkpoint, str(checkpoint_path))
 
 if __name__ == "__main__":
     # Hyperparameters

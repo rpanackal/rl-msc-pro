@@ -6,28 +6,29 @@ from datetime import datetime
 
 import numpy as np
 import torch
+from carl.envs import CARLBraxHalfcheetah, CARLDmcQuadrupedEnv
+from torch.utils.tensorboard import SummaryWriter
 
-from ..agents import CoretranAgent
+from ..agents import CoretranAgentV2
+from ..assets import Transformer, VariationalTransformer
 from ..config import (
-    ReinforcedLearnerConfig,
     CoretranAgentConfig,
+    OptimizerConfig,
+    OrigAutoformerConfig,
+    ReinforcedLearnerConfig,
     TransformerConfig,
     VariationalTransformerConfig,
-    OptimizerConfig,
-    OrigAutoformerConfig
 )
 from ..envs.core import make_env
-from ..utils import set_torch_seed, get_observation_dim
-from ..assets import Transformer, VariationalTransformer
+from ..utils import get_action_dim, get_observation_dim, set_torch_seed
 
-from carl.envs import CARLBraxHalfcheetah
-from torch.utils.tensorboard import SummaryWriter
 
 def load_pretrained_model(model, path):
     checkpoint = torch.load(path)
     model.load_state_dict(checkpoint["model_state_dict"])
     print("Loaded pretrained model")
     return model
+
 
 def main():
     config = ReinforcedLearnerConfig(
@@ -49,7 +50,7 @@ def main():
             state_seq_length=2,
             target_network_frequency=2,
             policy_frequency=4,
-            autotune=True,
+            autotune=False,
             alpha=0.2,
         ),
         total_timesteps=1e6,
@@ -57,7 +58,7 @@ def main():
         batch_size=64,
         normalize_observation=True,
         n_envs=1,
-        device=torch.device("cuda:4" if torch.cuda.is_available() else "cpu"),
+        device=torch.device("cuda:0" if torch.cuda.is_available() else "cpu"),
     )
     current_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     config.name = f"{config.env_id}_{config.agent.name}_{current_datetime}"
@@ -65,15 +66,15 @@ def main():
     set_torch_seed(config.random_seed)
 
     # Here only 1 environment
-    env = CARLBraxHalfcheetah(obs_context_as_dict=True, batch_size=1)
+    env = CARLDmcQuadrupedEnv(obs_context_as_dict=False, batch_size=1)
     envs = make_env(
         # env=config.env_id,
-        env = env,
+        env=env,
         seed=config.random_seed,
         n_envs=config.n_envs,
         capture_video=config.capture_video,
         run_name=config.name,
-        normalize_observation=config.normalize_observation
+        normalize_observation=config.normalize_observation,
     )
 
     print("Device in use: ", config.device)
@@ -81,11 +82,9 @@ def main():
     print("Observation Space: ", envs.single_observation_space)
     print("Action Space: ", envs.single_action_space)
 
-    # TODO: Get observation dimension for CARL environments differently
-    observation_dim = get_observation_dim(envs)#.single_observation_space.shape)
-    action_dim = np.prod(envs.single_action_space.shape)
-    print(envs.single_observation_space.shape)
-    print(envs.single_action_space.shape)
+    observation_dim = get_observation_dim(envs)
+    action_dim = get_action_dim(envs)
+
     # Define Representation Model
     # ! Important: Reconstruction of complete source
     model = Transformer(
@@ -104,10 +103,10 @@ def main():
 
     print(model)
 
-    model = load_pretrained_model(
-        model,
-        path="/home/rajanro/projects/rl-msc-pro/src/checkpoints/halfcheetah-expert-v2_transformer_2023-09-30_17-35-23/checkpoint.pth",
-    )
+    # model = load_pretrained_model(
+    #     model,
+    #     path="/home/rajanro/projects/rl-msc-pro/src/checkpoints/halfcheetah-expert-v2_transformer_2023-09-30_17-35-23/checkpoint.pth",
+    # )
 
     # Setup trial logging
     log_dir = config.checkpoint_dir / config.name
@@ -117,7 +116,7 @@ def main():
     with open(config_path, "w") as config_file:
         config_file.write(config.model_dump_json(exclude={"device"}))
 
-    agent = CoretranAgent(
+    agent = CoretranAgentV2(
         envs=envs,
         repr_model=model,
         repr_model_learning_rate=config.agent.repr_model_optimizer.lr,
@@ -147,6 +146,7 @@ def main():
     # agent.test(n_episodes=10)
 
     envs.close()
+
 
 if __name__ == "__main__":
     main()

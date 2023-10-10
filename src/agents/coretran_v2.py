@@ -15,7 +15,7 @@ from .core import GenericAgent, CompactStateTransitions
 from ..utils import get_observation_dim
 
 
-class CoretranAgent(GenericAgent):
+class CoretranAgentV2(GenericAgent):
     """Contextual Representation Learning via Time Series Transformers for Control" """
 
     def __init__(
@@ -35,8 +35,8 @@ class CoretranAgent(GenericAgent):
         )
         if getattr(envs, "is_vector_env", None):
             if envs.is_carl_env:
-                envs.single_observation_space["obs"].dtype = np.float32
-                envs.single_observation_space["context"].dtype = np.float32
+                envs.single_observation_space['obs'].dtype = np.float32
+                envs.single_observation_space['context'].dtype = np.float32
             else:
                 envs.single_observation_space.dtype = np.float32
             self.observation_dim = get_observation_dim(envs)
@@ -44,8 +44,8 @@ class CoretranAgent(GenericAgent):
             self.n_envs = envs.num_envs
         else:
             if envs.is_carl_env:
-                envs.observation_space["obs"].dtype = np.float32
-                envs.observation_space["context"].dtype = np.float32
+                envs.observation_space['obs'].dtype = np.float32
+                envs.observation_space['context'].dtype = np.float32
             else:
                 envs.observation_space.dtype = np.float32
             self.observation_dim = get_observation_dim(envs)
@@ -73,6 +73,7 @@ class CoretranAgent(GenericAgent):
         self.repr_optimizer = optim.Adam(
             list(self.repr_model.parameters()),
             lr=repr_model_learning_rate,
+            # weight_decay=1e-5
         )
         self.q_optimizer = optim.Adam(
             list(self.qf1.parameters()) + list(self.qf2.parameters()),
@@ -88,6 +89,7 @@ class CoretranAgent(GenericAgent):
             action_space=envs.single_action_space,
             device=device,
             n_envs=self.n_envs,
+            include_context=envs.is_carl_env
         )
 
         self.device = device
@@ -219,8 +221,8 @@ class CoretranAgent(GenericAgent):
 
     def preprocess_experience(self, experience):
         """Preprocess experience if needed (e.g., stacking frames, normalizing)."""
-        # Assuming experience is a tuple: (obs, next_obs, actions, rewards, dones, infos)
-        obs, next_obs, actions, rewards, dones, infos = experience
+        # Assuming experience is a tuple: (obs, next_obs, actions, rewards, dones, infos, context)
+        obs, next_obs, actions, rewards, dones, infos, context = experience
 
         # TRY NOT TO MODIFY: save data to reply buffer; handle `terminal_observation`
         # When using vectorized environment, the environments are automatically reset
@@ -238,7 +240,7 @@ class CoretranAgent(GenericAgent):
                     real_next_obs[idx] = infos["final_observation"][idx]
 
         # Add any preprocessing code here
-        return obs, real_next_obs, actions, rewards, dones, infos
+        return obs, real_next_obs, actions, rewards, dones, infos, context
 
     def update_agent(self, experience):
         """
@@ -247,7 +249,7 @@ class CoretranAgent(GenericAgent):
 
         Args:
             experience: A tuple containing one timestep's worth of data,
-                usually (obs, next_obs, actions, rewards, dones, infos).
+                usually (obs, next_obs, actions, rewards, dones, infos, context).
 
         Steps involved:
             1. Add experience to the episodic replay buffer.
@@ -261,7 +263,7 @@ class CoretranAgent(GenericAgent):
         samples entire episodes for training.
         """
         # Add new experience to the episodic replay buffer
-        # Assuming experience is a tuple: (obs, real_next_obs, actions, rewards, dones, infos)
+        # Assuming experience is a tuple: (obs, real_next_obs, actions, rewards, dones, infos, context)
         self.replay_buffer.add(*experience)
 
         if self.global_step < self.learning_starts:
@@ -712,6 +714,8 @@ class CoretranAgent(GenericAgent):
 
         # Reset the environment and get initial observation
         curr_obs, _ = self.envs.reset()
+
+        context = None
         if self.envs.is_carl_env:
             curr_obs, context = curr_obs["obs"], curr_obs["context"]
 
@@ -726,10 +730,12 @@ class CoretranAgent(GenericAgent):
             )
             # Execute actions in the environment
             next_obs, rewards, dones, infos = self.envs.step(actions)
+
+            context = None
             if self.envs.is_carl_env:
                 next_obs, context = next_obs["obs"], next_obs["context"]
 
-            experience = (curr_obs, next_obs, actions, rewards, dones, infos)
+            experience = (curr_obs, next_obs, actions, rewards, dones, infos, context)
 
             # Prepare experience for agent update
             experience = self.preprocess_experience(experience)
@@ -800,7 +806,9 @@ class CoretranAgent(GenericAgent):
 
             # Execute the actions in the environments
             next_obs, rewards, dones, _ = self.envs.step(actions)
-
+            if self.envs.is_carl_env:
+                next_obs, context = next_obs["obs"], next_obs["context"]
+        
             # Update the episode rewards
             for i, (reward, done) in enumerate(zip(rewards, dones)):
                 episodic_returns[i] += reward
@@ -833,7 +841,6 @@ class CoretranAgent(GenericAgent):
             if self.writer:
                 self.writer.add_scalar(f"test/avg_return", avg_return, i + 1)
 
-
 if __name__ == "__main__":
     # Hyperparameters
     # TODO: Update unit test
@@ -857,4 +864,4 @@ if __name__ == "__main__":
 
     envs = gymnasium.make_env(env_id, seed)
 
-    agent = CoretranAgent()
+    agent = CoretranAgentV2()

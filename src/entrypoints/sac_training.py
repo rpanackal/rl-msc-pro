@@ -1,34 +1,49 @@
 import time
 from datetime import datetime
 
+import carl
 import numpy as np
-from ..agents import SACAgent
-from ..config import ReinforcedLearnerConfig, SACAgentConfig, OptimizerConfig
-from ..envs.core import make_env
-from ..utils import set_torch_seed
-from ..envs.wrappers.normalization import RMVNormalizeVecObservation, EMANormalizeVecObservation
+from carl.envs.dmc import CARLDmcQuadrupedEnv, CARLDmcWalkerEnv
 from torch.utils.tensorboard import SummaryWriter
 
+from ..agents import SACAgent
+from ..config import OptimizerConfig, ReinforcedLearnerConfig, SACAgentConfig
+from ..envs.core import make_env
+from ..utils import get_action_dim, get_observation_dim, set_torch_seed
+from pathlib import PurePath
+
 if __name__ == "__main__":
-    config = ReinforcedLearnerConfig(batch_size=64, normalize_observation=True, agent=SACAgentConfig(), total_timesteps=1e6)
+    config = ReinforcedLearnerConfig(
+        env_id='CARLDmcWalkerEnv',
+        batch_size=64,
+        normalize_observation=True,
+        agent=SACAgentConfig(),
+        total_timesteps=1e6,
+    )
     current_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     config.name = f"{config.env_id}_{config.agent.name}_{current_datetime}"
 
     set_torch_seed(config.random_seed)
 
     # Here only 1 environment
+    env = CARLDmcWalkerEnv(obs_context_as_dict=False, batch_size=1)
     envs = make_env(
-        env=config.env_id,
+        # env=config.env_id,
+        env=env,
         seed=config.random_seed,
         n_envs=config.n_envs,
         capture_video=config.capture_video,
         run_name=config.name,
-        normalize_observation=config.normalize_observation
+        normalize_observation=config.normalize_observation,
     )
 
+    print("Device in use: ", config.device)
     print("Number of environments: ", envs.num_envs)
     print("Observation Space: ", envs.single_observation_space)
     print("Action Space: ", envs.single_action_space)
+
+    observation_dim = get_observation_dim(envs)
+    action_dim = get_action_dim(envs)
 
     # Setup trial logging
     log_dir = config.checkpoint_dir / config.name
@@ -58,7 +73,7 @@ if __name__ == "__main__":
         target_network_frequency=config.agent.target_network_frequency,
         tau=config.agent.tau,
     )
-
+    
     agent.test(n_episodes=10)
-
+    agent.save_checkpoint(PurePath(writer.get_logdir()))
     envs.close()

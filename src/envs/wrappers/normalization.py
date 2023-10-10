@@ -3,6 +3,7 @@ import gymnasium as gymz
 from gymnasium.vector import VectorEnvWrapper
 from src.utils import is_vector_env
 
+
 class RMVNormalizeVecObservation(gymz.Wrapper):
     """
     A wrapper for normalizing observations in a vectorized gymz environment.
@@ -22,9 +23,19 @@ class RMVNormalizeVecObservation(gymz.Wrapper):
         assert is_vector_env(env), "The env wrapped must be vectorized."
         super().__init__(env)
 
+        self.is_carl_env = env.is_carl_env
+
         # Running mean and variance of observations
-        self.mean = np.zeros(self.single_observation_space.shape, dtype=np.float64)
-        self.var = np.ones(self.single_observation_space.shape, dtype=np.float64)
+        if env.is_carl_env:
+            self.mean = np.zeros(
+                self.single_observation_space["obs"].shape, dtype=np.float64
+            )
+            self.var = np.ones(
+                self.single_observation_space["obs"].shape, dtype=np.float64
+            )
+        else:
+            self.mean = np.zeros(self.single_observation_space.shape, dtype=np.float64)
+            self.var = np.ones(self.single_observation_space.shape, dtype=np.float64)
 
         self.count = 0  # Count of observations
         self.epsilon = epsilon
@@ -35,6 +46,16 @@ class RMVNormalizeVecObservation(gymz.Wrapper):
         Reset the environment and update normalization statistics.
         """
         observations, infos = self.env.reset(*args, **kwargs)
+
+        if self.is_carl_env:
+            self.update_stats(observations["obs"])
+            observations["obs"] = (
+                self.normalize_observations(observations["obs"])
+                if self._is_observation_scaling
+                else observations["obs"]
+            )
+            return observations, infos
+
         self.update_stats(observations)
         return (
             self.normalize_observations(observations)
@@ -49,6 +70,15 @@ class RMVNormalizeVecObservation(gymz.Wrapper):
         and update normalization statistics.
         """
         observations, rewards, terminated, truncated, infos = super().step(actions)
+
+        if self.is_carl_env:
+            self.update_stats(observations["obs"])
+            observations["obs"] = (
+                self.normalize_observations(observations['obs'])
+                if self._is_observation_scaling
+                else observations["obs"]
+            )
+            return observations, rewards, terminated, truncated, infos
 
         self.update_stats(observations)
         return (
