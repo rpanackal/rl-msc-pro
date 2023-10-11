@@ -8,7 +8,7 @@ from ..layers import (
     AttentionPooling
 )
 import math
-
+from pydantic import BaseModel
 
 class EncoderBlock(nn.Module):
     def __init__(self, embed_dim, n_heads, expanse_dim, dropout) -> None:
@@ -67,6 +67,7 @@ class Transformer(nn.Module):
         tgt_seq_length: int,
         cond_prefix_frac: float,
         dropout,
+        head_dims: list[int] | None = None,
         full_output: bool = False,
     ) -> None:
         super().__init__()
@@ -108,6 +109,12 @@ class Transformer(nn.Module):
         self.fc = nn.Linear(in_features=embed_dim, out_features=tgt_feat_dim)
         self.dropout_layer = nn.Dropout(dropout)
 
+        # Initialize the additional heads
+        if head_dims:
+            self.additional_heads = nn.ModuleList([
+                nn.Linear(self.embed_dim * self.src_seq_length, dim) for dim in head_dims
+            ])
+
         self.src_feat_dim = src_feat_dim
         self.tgt_feat_dim = tgt_feat_dim
         self.embed_dim = embed_dim
@@ -119,6 +126,7 @@ class Transformer(nn.Module):
         self.tgt_seq_length = tgt_seq_length
         self.cond_prefix_frac = cond_prefix_frac
         self.dropout = dropout
+        self.head_dims = head_dims
         self.full_output = full_output
 
     def forward(
@@ -143,8 +151,14 @@ class Transformer(nn.Module):
         enc_output = src_embedded
         for enc_block in self.encoder_blocks:
             enc_output = enc_block(enc_output, src_mask)
+        
+        if self.head_dims:
+            flattened_enc_output = torch.flatten(enc_output, start_dim=1, end_dim=2)
+            additional_outputs = [head(flattened_enc_output) for head in self.additional_heads]
 
         if enc_only:
+            if self.head_dims:
+                return enc_output, additional_outputs
             return enc_output
 
         # Decoder section
@@ -158,6 +172,13 @@ class Transformer(nn.Module):
         dec_output = self.fc(dec_output)
 
         if full_output:
+            if self.head_dims:
+                return (
+                    dec_output,
+                    enc_output,
+                    additional_outputs
+                )
+
             return (
                 dec_output,
                 enc_output,
@@ -244,5 +265,6 @@ class Transformer(nn.Module):
             tgt_seq_length=self.tgt_seq_length,
             cond_prefix_frac=self.cond_prefix_frac,
             dropout=self.dropout,
+            head_dims=self.head_dims,
             full_output=self.full_output,
         )

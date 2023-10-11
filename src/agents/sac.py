@@ -31,7 +31,7 @@ class SACAgent(GenericAgent):
         )
 
         if getattr(envs, "is_vector_env", None):
-            if envs.is_carl_env:
+            if envs.is_contextual_env:
                 envs.single_observation_space['obs'].dtype = np.float32
                 envs.single_observation_space['context'].dtype = np.float32
             else:
@@ -40,7 +40,7 @@ class SACAgent(GenericAgent):
             self.action_dim = np.prod(envs.single_action_space.shape)
             self.n_envs = envs.num_envs
         else:
-            if envs.is_carl_env:
+            if envs.is_contextual_env:
                 envs.observation_space['obs'].dtype = np.float32
                 envs.observation_space['context'].dtype = np.float32
             else:
@@ -66,7 +66,7 @@ class SACAgent(GenericAgent):
 
         self.replay_buffer = ReplayBuffer(
             buffer_size,
-            envs.single_observation_space['obs'] if envs.is_carl_env else envs.single_observation_space,
+            envs.single_observation_space['obs'] if envs.is_contextual_env else envs.single_observation_space,
             envs.single_action_space,
             device,
             n_envs=self.n_envs,
@@ -184,7 +184,7 @@ class SACAgent(GenericAgent):
         real_next_obs = next_obs.copy()
         for idx, done in enumerate(dones):
             if done:  # if the sub-environment has terminated
-                if self.envs.is_carl_env:
+                if self.envs.is_contextual_env:
                     real_next_obs[idx] = infos["final_observation"][idx]["obs"]
                 else:
                     real_next_obs[idx] = infos["final_observation"][idx]
@@ -420,7 +420,7 @@ class SACAgent(GenericAgent):
 
         # Reset the environment and get initial observation
         curr_obs, _ = self.envs.reset()
-        if self.envs.is_carl_env:
+        if self.envs.is_contextual_env:
             curr_obs, context = curr_obs["obs"], curr_obs["context"]
         for _ in range(total_timesteps):
             # Sample actions
@@ -432,7 +432,7 @@ class SACAgent(GenericAgent):
 
             # Execute actions in the environment
             next_obs, rewards, dones, infos = self.envs.step(actions)
-            if self.envs.is_carl_env:
+            if self.envs.is_contextual_env:
                 next_obs, context = next_obs["obs"], next_obs["context"]
 
             # Prepare experience for the agent's update
@@ -496,7 +496,7 @@ class SACAgent(GenericAgent):
 
         # Reset the environments to get an initial observation state
         curr_obs, _ = self.envs.reset()
-        if self.envs.is_carl_env:
+        if self.envs.is_contextual_env:
             curr_obs, context = curr_obs["obs"], curr_obs["context"]
 
         while min(episode_count) < n_episodes:
@@ -505,7 +505,7 @@ class SACAgent(GenericAgent):
 
             # Execute the actions in the environments
             next_obs, rewards, dones, _ = self.envs.step(actions)
-            if self.envs.is_carl_env:
+            if self.envs.is_contextual_env:
                 next_obs, context = next_obs["obs"], next_obs["context"]
             # Update the episode rewards
             for i, (reward, done) in enumerate(zip(rewards, dones)):

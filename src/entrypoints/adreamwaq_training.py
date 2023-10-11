@@ -6,21 +6,16 @@ from datetime import datetime
 
 import numpy as np
 import torch
-
-from ..agents import CoretranAgent
-from ..config import (
-    ReinforcedLearnerConfig,
-    CoretranAgentConfig,
-    TransformerConfig,
-    VariationalTransformerConfig,
-    OptimizerConfig,
-    BufferConfig,
-)
-from ..envs.core import make_env
-from ..utils import set_torch_seed
-from ..assets import Transformer, VariationalTransformer
-
+from carl.envs import CARLBraxHalfcheetah, CARLDmcQuadrupedEnv
 from torch.utils.tensorboard import SummaryWriter
+
+from ..agents import AdaptedDreamWAQ
+from ..assets import Transformer, VariationalTransformer
+from ..config import (BufferConfig, CoretranAgentConfig, OptimizerConfig,
+                      ReinforcedLearnerConfig, TransformerConfig,
+                      VariationalTransformerConfig)
+from ..envs.core import make_env
+from ..utils import get_action_dim, get_observation_dim, set_torch_seed
 
 
 def load_pretrained_model(model: torch.nn.Module, path: str):
@@ -33,8 +28,8 @@ def load_pretrained_model(model: torch.nn.Module, path: str):
 def main():
     config = ReinforcedLearnerConfig(
         agent=CoretranAgentConfig(
+            name="adreamwaq",
             repr_model=TransformerConfig(
-                embed_dim=16,
                 n_enc_blocks=2,
                 n_dec_blocks=1,
                 src_seq_length=5,
@@ -68,8 +63,10 @@ def main():
     set_torch_seed(config.random_seed)
 
     # Here only 1 environment
+    env = CARLDmcQuadrupedEnv(obs_context_as_dict=False, batch_size=1)
     envs = make_env(
-        env=config.env_id,
+        # env=config.env_id,
+        env=env,
         seed=config.random_seed,
         n_envs=config.n_envs,
         capture_video=config.capture_video,
@@ -79,12 +76,20 @@ def main():
 
     print("Device in use: ", config.device)
     print("Number of environments: ", envs.num_envs)
-    print("Observation Space: ", envs.single_observation_space)
+    print("Observation Space: ", envs.single_observation_space['obs'])
     print("Action Space: ", envs.single_action_space)
+    print("Context Space: ", envs.single_observation_space['context'])
 
-    observation_dim = np.prod(envs.single_observation_space.shape)
-    action_dim = np.prod(envs.single_action_space.shape)
+    observation_dim = get_observation_dim(envs)
+    action_dim = get_action_dim(envs)
+    print("Source feature dimension", observation_dim + action_dim)
+    
+    quotient = (observation_dim + action_dim) * 0.75 // config.agent.repr_model.n_heads
+    config.agent.repr_model.embed_dim = int(config.agent.repr_model.n_heads * quotient)
+    print("Embedding dimension", config.agent.repr_model.embed_dim)
 
+    config.agent.repr_model.head_dims = [np.prod(envs.single_observation_space['context'].shape).item()]
+    
     # Define Representation Model
     # ! Important: Reconstruction of complete source
     model = Transformer(
@@ -117,7 +122,7 @@ def main():
     with open(config_path, "w") as config_file:
         config_file.write(config.model_dump_json(exclude={"device"}))
 
-    agent = CoretranAgent(
+    agent = AdaptedDreamWAQ(
         envs=envs,
         repr_model=model,
         repr_model_learning_rate=config.agent.repr_model_optimizer.lr,

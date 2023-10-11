@@ -173,7 +173,7 @@ def get_observation_dim(env):
     if space is None:
         ValueError("Observation space not found in environment.")
     
-    if getattr(env, 'is_carl_env', False):
+    if getattr(env, 'is_contextual_env', False):
         return np.prod(space["obs"].shape)
     return np.prod(space.shape)
 

@@ -9,21 +9,16 @@ import torch
 from carl.envs import CARLBraxHalfcheetah, CARLDmcQuadrupedEnv
 from torch.utils.tensorboard import SummaryWriter
 
-from ..agents import CoretranAgentV2
+from ..agents import CoretranAgent
 from ..assets import Transformer, VariationalTransformer
-from ..config import (
-    CoretranAgentConfig,
-    OptimizerConfig,
-    OrigAutoformerConfig,
-    ReinforcedLearnerConfig,
-    TransformerConfig,
-    VariationalTransformerConfig,
-)
+from ..config import (CoretranAgentConfig, OptimizerConfig,
+                      BufferConfig, ReinforcedLearnerConfig,
+                      TransformerConfig, VariationalTransformerConfig)
 from ..envs.core import make_env
 from ..utils import get_action_dim, get_observation_dim, set_torch_seed
 
 
-def load_pretrained_model(model, path):
+def load_pretrained_model(model: torch.nn.Module, path: str):
     checkpoint = torch.load(path)
     model.load_state_dict(checkpoint["model_state_dict"])
     print("Loaded pretrained model")
@@ -41,6 +36,8 @@ def main():
                 src_seq_length=5,
                 tgt_seq_length=5,
                 cond_prefix_frac=0,
+                load_from_path=""
+                # load_from_path="/home/rajanro/projects/rl-msc-pro/src/checkpoints/halfcheetah-expert-v2_transformer_2023-09-30_17-35-23/checkpoint.pth"
             ),
             log_freq=100,
             repr_model_optimizer=OptimizerConfig(lr=1e-4),
@@ -48,17 +45,18 @@ def main():
             critic_optimizer=OptimizerConfig(lr=1e-3),
             kappa=0.001,
             state_seq_length=2,
-            target_network_frequency=2,
-            policy_frequency=4,
-            autotune=False,
+            target_network_frequency=8,
+            policy_frequency=2,
+            autotune=True,
             alpha=0.2,
+            buffer=BufferConfig(buffer_size=1e5),
         ),
         total_timesteps=1e6,
         learning_starts=7000,
         batch_size=64,
         normalize_observation=True,
         n_envs=1,
-        device=torch.device("cuda:0" if torch.cuda.is_available() else "cpu"),
+        device=torch.device("cuda:4" if torch.cuda.is_available() else "cpu"),
     )
     current_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     config.name = f"{config.env_id}_{config.agent.name}_{current_datetime}"
@@ -103,10 +101,11 @@ def main():
 
     print(model)
 
-    # model = load_pretrained_model(
-    #     model,
-    #     path="/home/rajanro/projects/rl-msc-pro/src/checkpoints/halfcheetah-expert-v2_transformer_2023-09-30_17-35-23/checkpoint.pth",
-    # )
+    if config.agent.repr_model.load_from_path:
+        model = load_pretrained_model(
+            model,
+            path=config.agent.repr_model.load_from_path,
+        )
 
     # Setup trial logging
     log_dir = config.checkpoint_dir / config.name
@@ -116,7 +115,7 @@ def main():
     with open(config_path, "w") as config_file:
         config_file.write(config.model_dump_json(exclude={"device"}))
 
-    agent = CoretranAgentV2(
+    agent = CoretranAgent(
         envs=envs,
         repr_model=model,
         repr_model_learning_rate=config.agent.repr_model_optimizer.lr,

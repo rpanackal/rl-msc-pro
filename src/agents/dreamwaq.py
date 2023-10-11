@@ -11,11 +11,11 @@ from torch.utils.tensorboard import SummaryWriter
 from ..assets import Transformer
 from ..assets.models import Actor, SoftQNetwork
 from ..data.buffer import EpisodicBuffer, EpisodicBufferSamples
-from .core import GenericAgent, CompactStateTransitions
+from .core import GenericAgent, CompactStateTransitions, ContextualStateTransitions
 from ..utils import get_observation_dim
 
 
-class CoretranAgentV2(GenericAgent):
+class AdaptedDreamWAQ(GenericAgent):
     """Contextual Representation Learning via Time Series Transformers for Control" """
 
     def __init__(
@@ -33,19 +33,28 @@ class CoretranAgentV2(GenericAgent):
         assert isinstance(envs.single_action_space, gymnasium.spaces.Box), ValueError(
             f"only continuous action space is supported, given {envs.single_action_space}"
         )
+
+        assert envs.is_contextual_env, ValueError(
+            f"Agent expects contextual environments to work correctly."
+        )
+
         if getattr(envs, "is_vector_env", None):
-            if envs.is_carl_env:
-                envs.single_observation_space['obs'].dtype = np.float32
-                envs.single_observation_space['context'].dtype = np.float32
+            if envs.is_contextual_env:
+                envs.single_observation_space["obs"].dtype = np.float32
+                envs.single_observation_space["context"].dtype = np.float32
+                self.context_dim = np.prod(
+                    envs.single_observation_space["context"].shape
+                )
             else:
                 envs.single_observation_space.dtype = np.float32
             self.observation_dim = get_observation_dim(envs)
             self.action_dim = np.prod(envs.single_action_space.shape)
             self.n_envs = envs.num_envs
         else:
-            if envs.is_carl_env:
-                envs.observation_space['obs'].dtype = np.float32
-                envs.observation_space['context'].dtype = np.float32
+            if envs.is_contextual_env:
+                envs.observation_space["obs"].dtype = np.float32
+                envs.observation_space["context"].dtype = np.float32
+                self.context_dim = np.prod(envs.observation_space["context"].shape)
             else:
                 envs.observation_space.dtype = np.float32
             self.observation_dim = get_observation_dim(envs)
@@ -53,27 +62,28 @@ class CoretranAgentV2(GenericAgent):
             self.n_envs = 1
 
         self.repr_model = repr_model.float()
-        self.repr_model_target = repr_model.model_twin().to(device)
-        self.repr_model_target.load_state_dict(self.repr_model.state_dict())
-        self.repr_model_target.eval()
+        # self.repr_model_target = repr_model.model_twin().to(device)
+        # self.repr_model_target.load_state_dict(self.repr_model.state_dict())
+        # self.repr_model_target.eval()
 
         self.src_seq_length = self.repr_model.src_seq_length
         self.tgt_seq_length = self.repr_model.tgt_seq_length
         self.embed_dim = self.repr_model.embed_dim
-        self.repr_dim = self.embed_dim * self.src_seq_length
+        
+        self.prompt_dim = self.embed_dim * self.src_seq_length
+        self.critic_state_dim = self.observation_dim + self.context_dim
 
-        self.actor = Actor(envs, self.repr_dim).to(device)
-        self.qf1 = SoftQNetwork(envs, self.repr_dim).to(device)
-        self.qf2 = SoftQNetwork(envs, self.repr_dim).to(device)
-        self.qf1_target = SoftQNetwork(envs, self.repr_dim).to(device)
-        self.qf2_target = SoftQNetwork(envs, self.repr_dim).to(device)
+        self.actor = Actor(envs, self.observation_dim + self.prompt_dim).to(device)
+        self.qf1 = SoftQNetwork(envs, self.critic_state_dim).to(device)
+        self.qf2 = SoftQNetwork(envs, self.critic_state_dim).to(device)
+        self.qf1_target = SoftQNetwork(envs, self.critic_state_dim).to(device)
+        self.qf2_target = SoftQNetwork(envs, self.critic_state_dim).to(device)
         self.qf1_target.load_state_dict(self.qf1.state_dict())
         self.qf2_target.load_state_dict(self.qf2.state_dict())
 
         self.repr_optimizer = optim.Adam(
             list(self.repr_model.parameters()),
             lr=repr_model_learning_rate,
-            # weight_decay=1e-5
         )
         self.q_optimizer = optim.Adam(
             list(self.qf1.parameters()) + list(self.qf2.parameters()),
@@ -89,7 +99,7 @@ class CoretranAgentV2(GenericAgent):
             action_space=envs.single_action_space,
             device=device,
             n_envs=self.n_envs,
-            include_context=envs.is_carl_env
+            include_context=envs.is_contextual_env,
         )
 
         self.device = device
@@ -234,7 +244,7 @@ class CoretranAgentV2(GenericAgent):
         # Loop over each sub-environment using the 'dones' array
         for idx, done in enumerate(dones):
             if done:  # if the sub-environment has terminated
-                if self.envs.is_carl_env:
+                if self.envs.is_contextual_env:
                     real_next_obs[idx] = infos["final_observation"][idx]["obs"]
                 else:
                     real_next_obs[idx] = infos["final_observation"][idx]
@@ -282,12 +292,6 @@ class CoretranAgentV2(GenericAgent):
         # Update the Actor network
         # Only update the actor network periodically, as defined by policy_frequency
         if self.global_step % self.policy_frequency == 0:
-            # Sample a batch of random episodes/trajectories from episodic replay buffer
-            # samples = self.replay_buffer.sample(
-            #     self.batch_size, self.min_trajectory_length
-            # )
-            # self.update_actor(samples, state_transitions)
-
             self.update_actor(state_transitions)
 
         # Update the Target Networks
@@ -340,32 +344,37 @@ class CoretranAgentV2(GenericAgent):
             dim=1,
         )
 
-        # 2. Compute target all target sequences in trajectory
+        # 2. Compute target all target sequences in trajectory (task: TSF)
         # targets = samples.observations[:, 1:, :]
         # conditionals = samples.actions[:, 1:, :]
+        # contexts = samples.contexts
 
         # 3. Compute index in sources to start sampling source from.
         start_atmost = self.src_seq_length - 1
         start_atleast = 0
-        # With a probability  1 - eta, start is start_atmost, else,
-        # start is uniformly from anywhere in 0..start_atmost
+        # With a probability  1 - kappa, start is start_atmost, else,
+        # start is uniformly from anywhere in [0..start_atmost]
         start = (
             torch.randint(start_atleast, start_atmost + 1, (1,)).item()
             if torch.rand(1).item() < self.kappa
             else (start_atmost)
         )
-        end = start + self.state_seq_length
-
-        state_transitions = CompactStateTransitions(
-            states=torch.empty(
-                (self.batch_size, self.state_seq_length, self.repr_dim)
+        end = start + self.state_seq_length  # exclusive
+        
+        # TODO: Adapt repr dim
+        state_transitions = ContextualStateTransitions(
+            prompts=torch.empty(
+                (self.batch_size, self.state_seq_length, self.prompt_dim)
             ).to(self.device),
-            next_states=torch.empty(
-                (self.batch_size, self.state_seq_length - 1, self.repr_dim)
-            ).to(self.device),
+            # next_prompts=torch.empty(
+            #     (self.batch_size, self.state_seq_length - 1, self.repr_dim)
+            # ).to(self.device),
+            observations=samples.observations[:, start:end],
             actions=samples.actions[:, start:end, :],
             rewards=samples.rewards[:, start:end],
             dones=samples.dones[:, start:end],
+            next_observations=samples.next_observations[:,start:end],
+            contexts=samples.contexts[:, start:end],
             loss=None,
         )
 
@@ -380,19 +389,28 @@ class CoretranAgentV2(GenericAgent):
 
             # target = targets[:, t : t + self.tgt_seq_length, :]
             # conditional = conditionals[:, t : t + self.tgt_seq_length, :]
+            context = samples.contexts[:, t, :]
 
             # 3. Produce state representations and future observations
-            dec_output, enc_output = self.repr_model(source, full_output=True)
+            dec_output, enc_output, context_head_output = self.repr_model(source, full_output=True)
 
             # 5. Compute representation model loss
-            mse_loss = F.mse_loss(dec_output, source)
+            recon_loss = F.mse_loss(dec_output, source)
+
+            # Interpret first 'context_dim' many components to be context features
+            context_loss = F.mse_loss(
+                torch.flatten(enc_output, start_dim=1, end_dim=2)[
+                    :, : self.context_dim
+                ],
+                context,
+            )
             # kl_loss = -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp())
-            total_loss = mse_loss  # + self.kl_weight * kl_loss
+            total_loss = recon_loss + context_loss # + self.kl_weight * kl_loss
 
             # # 6. Perform backpropagation to update the representation learning model.
-            # self.repr_optimizer.zero_grad()
-            # total_loss.backward()
-            # self.repr_optimizer.step()
+            self.repr_optimizer.zero_grad()
+            total_loss.backward()
+            self.repr_optimizer.step()
 
             # Log Q-function loss information of last state in sequence every log_freq steps.
             if self.global_step % self.log_freq == 0 and self.writer:
@@ -400,30 +418,32 @@ class CoretranAgentV2(GenericAgent):
                     "losses/repr_loss", total_loss.item(), self.global_step
                 )
 
-            state_transitions.states[:, t - start, :] = torch.flatten(
+            state_transitions.prompts[:, t - start, :] = torch.flatten(
                 enc_output, start_dim=1, end_dim=2
             )
             # state_transitions.states[:, t - start, :] = enc_output[:, -1, :]
             state_transitions.loss = total_loss
             # 4. Store final element along sequence dimension of enc_output as the state s_t,
             # Map times steps from source to time steps in trajectory.
-            with torch.no_grad():
-                if t + 1 < end:
-                    source = sources[:, t + 1 : t + 1 + self.src_seq_length, :].clone()
-                    # During online interaction, actions are sampled and not available for state calculation
-                    # for corresponding time step
-                    source[:, -1, -self.action_dim :] = 0
-                    enc_output = self.repr_model_target(source, enc_only=True)
-                    state_transitions.next_states[:, t - start, :] = torch.flatten(
-                        enc_output, start_dim=1, end_dim=2
-                    )
-                    # state_transitions.next_states[:, t - start, :] = enc_output[
-                    #     :, -1, :
-                    # ]
+
+            # * No need of target context representations, as critic has access to true context
+            # with torch.no_grad():
+            #     if t + 1 < end:
+            #         source = sources[:, t + 1 : t + 1 + self.src_seq_length, :].clone()
+            #         # During online interaction, actions are sampled and not available for state calculation
+            #         # for corresponding time step
+            #         source[:, -1, -self.action_dim :] = 0
+            #         enc_output = self.repr_model_target(source, enc_only=True)
+            #         state_transitions.next_prompts[:, t - start, :] = torch.flatten(
+            #             enc_output, start_dim=1, end_dim=2
+            #         )
+            #         # state_transitions.next_states[:, t - start, :] = enc_output[
+            #         #     :, -1, :
+            #         # ]
         # ? Should padding be done on target to get state sequence for all observations?
         return state_transitions
 
-    def update_critic(self, state_transitions: CompactStateTransitions):
+    def update_critic(self, state_transitions: ContextualStateTransitions):
         """
         Updates the critic network using the given state transitions.
 
@@ -436,19 +456,26 @@ class CoretranAgentV2(GenericAgent):
 
         # Loop through each time step in the trajectory
         # Note: We don't have next_states for the last time step in each trajectory,
-        # so we loop until the (n_src_per_batch - 1)th time step.
-        # ? Should loop be replaced with reshape to perform all operations at once?
-        for t in range(self.state_seq_length - 1):
+        # so we loop until the (state_seq_length - 1)th time step.
+
+        # * Construct critic input
+        states = torch.cat([state_transitions.contexts, state_transitions.observations], dim=2) # [observation_t, context_t]
+        next_states = torch.cat([state_transitions.contexts, state_transitions.next_observations], dim=2) # [next_observation_t, next_context_t]
+
+        # TODO: Should input asymmetry be maintained?
+        actor_next_states = torch.cat([state_transitions.prompts, state_transitions.next_observations], dim=2) # [next_observation_t, next_prompt_t]
+        # ? Is it upto state_seq_length now?
+        for t in range(self.state_seq_length):
             with torch.no_grad():
                 # 2. Sample next action and compute Q-value targets
                 next_state_action, next_state_log_pi, _ = self.sample_action(
-                    state_transitions.next_states[:, t, :]
+                    actor_next_states[:, t, :]
                 )
                 qf1_next_target = self.qf1_target(
-                    state_transitions.next_states[:, t, :], next_state_action
+                    next_states[:, t, :], next_state_action
                 )
                 qf2_next_target = self.qf2_target(
-                    state_transitions.next_states[:, t, :], next_state_action
+                    next_states[:, t, :], next_state_action
                 )
 
                 # 3. Compute the minimum Q-value target and the target for the Q-function update
@@ -462,24 +489,25 @@ class CoretranAgentV2(GenericAgent):
 
             # 4. Compute the Q-values and the MSE loss for both critics
             qf1_a_value = self.qf1(
-                state_transitions.states[:, t, :], state_transitions.actions[:, t, :]
+                states[:, t, :], state_transitions.actions[:, t, :]
             ).view(-1)
             qf2_a_value = self.qf2(
-                state_transitions.states[:, t, :], state_transitions.actions[:, t, :]
+                states[:, t, :], state_transitions.actions[:, t, :]
             ).view(-1)
             qf1_loss = F.mse_loss(qf1_a_value, next_q_value)
             qf2_loss = F.mse_loss(qf2_a_value, next_q_value)
             qf_loss = qf1_loss + qf2_loss
 
-            total_loss = qf_loss + state_transitions.loss
+            # TODO: Is it a better choice to propagate gradients between them?
+            # total_loss = qf_loss + state_transitions.loss
 
             # 5. Update critic model
-            self.repr_optimizer.zero_grad()
+            # self.repr_optimizer.zero_grad()
             self.q_optimizer.zero_grad()
-            # qf_loss.backward()
-            total_loss.backward()
+            qf_loss.backward()
+            # total_loss.backward()
             self.q_optimizer.step()
-            self.repr_optimizer.step()
+            # self.repr_optimizer.step()
 
         # Log Q-function loss information of last state in sequence every log_freq steps.
         if self.global_step % self.log_freq == 0 and self.writer:
@@ -495,7 +523,7 @@ class CoretranAgentV2(GenericAgent):
                 "losses/qf_loss", qf_loss.item() / 2.0, self.global_step
             )
 
-    def update_actor(self, state_transitions: CompactStateTransitions):
+    def update_actor(self, state_transitions: ContextualStateTransitions):
         """
         Updates the actor network using the given state transitions.
 
@@ -511,7 +539,12 @@ class CoretranAgentV2(GenericAgent):
 
         # 4. Store final element along sequence dimension of enc_output as the state s_t,
         t = torch.randint(high=self.state_seq_length, size=(1,)).item()
-        state = state_transitions.states[:, t, :].detach()
+        # state = state_transitions.prompts[:, t, :].detach()
+
+        # * Construct actor input
+        # TODO: Actor input dimension
+        state = torch.cat([state_transitions.prompts[:, t, :].detach(), state_transitions.observations[:, t, :]], dim=1) # [observation_t, prompt_t].T
+        critic_state = torch.cat([state_transitions.contexts[:, t, :].detach(), state_transitions.observations[:, t, :]], dim=1) # [observation_t, context_t].T
 
         # START: Policy freq loop
         for _ in range(self.policy_frequency):
@@ -522,8 +555,8 @@ class CoretranAgentV2(GenericAgent):
 
             # 5. Compute the Q-values of the sampled actions using both the
             # Q-functions (Q1 and Q2).
-            qf1_pi = self.qf1(state, pi)
-            qf2_pi = self.qf2(state, pi)
+            qf1_pi = self.qf1(critic_state, pi)
+            qf2_pi = self.qf2(critic_state, pi)
 
             # Take the minimum Q-value among the two Q-functions to improve
             # robustness.
@@ -592,12 +625,12 @@ class CoretranAgentV2(GenericAgent):
             )
 
         # Representation model targets
-        for param, target_param in zip(
-            self.repr_model.parameters(), self.repr_model_target.parameters()
-        ):
-            target_param.data.copy_(
-                self.tau * param.data + (1 - self.tau) * target_param.data
-            )
+        # for param, target_param in zip(
+        #     self.repr_model.parameters(), self.repr_model_target.parameters()
+        # ):
+        #     target_param.data.copy_(
+        #         self.tau * param.data + (1 - self.tau) * target_param.data
+        #     )
 
     def get_current_state(self, curr_obs: np.ndarray):
         # If learning hasn't started, current states are unnecessary
@@ -606,7 +639,7 @@ class CoretranAgentV2(GenericAgent):
             return
 
         # Fetch the ongoing episode form buffer
-        samples = self.replay_buffer.get_last_episode()
+        samples: EpisodicBufferSamples = self.replay_buffer.get_last_episode()
 
         source = torch.zeros(
             (
@@ -648,10 +681,12 @@ class CoretranAgentV2(GenericAgent):
         # Get state representations
         # self.repr_model.eval()
         with torch.no_grad():
-            enc_output = self.repr_model_target(source, enc_only=True)
+            enc_output, context_head_output = self.repr_model(source, enc_only=True)
 
-        state = torch.flatten(enc_output, start_dim=1, end_dim=2)
+        prompt = torch.flatten(enc_output, start_dim=1, end_dim=2)
         # state = enc_output[:, -1, :]
+        assert curr_obs.ndim == 2, "Current observation has more that 2 dimension"
+        state = torch.cat([prompt, torch.Tensor(curr_obs).to(self.device)], dim=1)
         return state
 
     def train(
@@ -716,7 +751,7 @@ class CoretranAgentV2(GenericAgent):
         curr_obs, _ = self.envs.reset()
 
         context = None
-        if self.envs.is_carl_env:
+        if self.envs.is_contextual_env:
             curr_obs, context = curr_obs["obs"], curr_obs["context"]
 
         for _ in range(total_timesteps):
@@ -726,14 +761,16 @@ class CoretranAgentV2(GenericAgent):
                 actions, _, _ = self.sample_action(states)
 
             actions = (
-                actions.cpu().numpy() if not isinstance(actions, np.ndarray) else actions
+                actions.cpu().numpy()
+                if not isinstance(actions, np.ndarray)
+                else actions
             )
             # Execute actions in the environment
             next_obs, rewards, dones, infos = self.envs.step(actions)
 
-            context = None
-            if self.envs.is_carl_env:
-                next_obs, context = next_obs["obs"], next_obs["context"]
+            next_context = None
+            if self.envs.is_contextual_env:
+                next_obs, next_context = next_obs["obs"], next_obs["context"]
 
             experience = (curr_obs, next_obs, actions, rewards, dones, infos, context)
 
@@ -745,6 +782,9 @@ class CoretranAgentV2(GenericAgent):
 
             # Update the current observation
             curr_obs = next_obs
+
+            if self.envs.is_contextual_env:
+                context = next_context
 
             # Log episodic information if available
             # Episodic information from any one of the environments is sufficient
@@ -798,6 +838,8 @@ class CoretranAgentV2(GenericAgent):
 
         # Reset the environments to get an initial observation state
         obs, _ = self.envs.reset()
+        if self.envs.is_contextual_env:
+            curr_obs, context = curr_obs["obs"], curr_obs["context"]
 
         while min(episode_count) < n_episodes:
             # Sample actions from the trained policy
@@ -806,9 +848,9 @@ class CoretranAgentV2(GenericAgent):
 
             # Execute the actions in the environments
             next_obs, rewards, dones, _ = self.envs.step(actions)
-            if self.envs.is_carl_env:
-                next_obs, context = next_obs["obs"], next_obs["context"]
-        
+            if self.envs.is_contextual_env:
+                next_obs, next_context = next_obs["obs"], next_obs["context"]
+
             # Update the episode rewards
             for i, (reward, done) in enumerate(zip(rewards, dones)):
                 episodic_returns[i] += reward
@@ -831,6 +873,7 @@ class CoretranAgentV2(GenericAgent):
 
             # Update the current observations
             obs = next_obs
+            context = next_context
 
         # Calculate and log the average returns over all test episodes for each environment
         for i, returns in enumerate(all_returns):
@@ -840,6 +883,7 @@ class CoretranAgentV2(GenericAgent):
             )
             if self.writer:
                 self.writer.add_scalar(f"test/avg_return", avg_return, i + 1)
+
 
 if __name__ == "__main__":
     # Hyperparameters
@@ -864,4 +908,4 @@ if __name__ == "__main__":
 
     envs = gymnasium.make_env(env_id, seed)
 
-    agent = CoretranAgentV2()
+    agent = AdaptedDreamWAQ()

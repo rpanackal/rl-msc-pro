@@ -1,6 +1,6 @@
 from typing import Union, NamedTuple, Any
 
-import gymnasium
+import gymnasium as gymz
 import numpy as np
 import torch as th
 from gymnasium import spaces
@@ -15,7 +15,7 @@ class EpisodicBufferSamples(NamedTuple):
     actions: th.Tensor | list[np.ndarray]
     rewards: th.Tensor | list[np.ndarray]
     dones: th.Tensor | list[np.ndarray]
-    context: th.Tensor | list[np.ndarray] | None
+    contexts: th.Tensor | list[np.ndarray] | None
 
 
 class EpisodicBuffer(BaseBuffer):
@@ -59,11 +59,12 @@ class EpisodicBuffer(BaseBuffer):
         self.overflow = False
 
         # To handle carl environment observation space
-        if isinstance(self.obs_shape, dict) and "obs" in self.obs_shape:
-            self.obs_shape = self.obs_shape["obs"]
+        print(self.observation_space)
+        if isinstance(self.observation_space, spaces.Dict) and "obs" in self.observation_space.keys():
+            self.obs_shape = self.observation_space["obs"].shape
 
         if self.include_context:
-            self.context_dim = np.prod(self.obs_shape["context"].shape)
+            self.context_dim = np.prod(self.observation_space["context"].shape)
         self.reset()
 
     def reset(self) -> None:
@@ -139,7 +140,7 @@ class EpisodicBuffer(BaseBuffer):
         self,
         batch_size: int,
         desired_length: int | None = None,
-        env: RMVNormalizeVecObservation | gymnasium.Env | None = None,
+        env: RMVNormalizeVecObservation | gymz.Env | None = None,
     ) -> EpisodicBufferSamples:
         """
         Samples a random batch of episodes from the episodic buffer.
@@ -309,12 +310,12 @@ class EpisodicBuffer(BaseBuffer):
             actions=sampled_actions,
             rewards=sampled_rewards,
             dones=sampled_dones,
-            context=sampled_contexts if self.include_context else None,
+            contexts=sampled_contexts if self.include_context else None,
         )
 
     def get_last_episode(
         self,
-        env: RMVNormalizeVecObservation | gymnasium.Env | None = None,
+        env: RMVNormalizeVecObservation | gymz.Env | None = None,
     ):
         """
         Retrieves the last episode for each environment in the buffer.
@@ -371,13 +372,13 @@ class EpisodicBuffer(BaseBuffer):
             actions=actions,
             rewards=rewards,
             dones=dones,
-            context=contexts if self.include_context else None,
+            contexts=contexts if self.include_context else None,
         )
 
     def normalize_obs(
         self,
         obs: np.ndarray,
-        env: RMVNormalizeVecObservation | gymnasium.Env | None = None,
+        env: RMVNormalizeVecObservation | gymz.Env | None = None,
     ):
         """The environment that is wrapped by RMVNormalizeVecObservation and
         is not scaling observations while sampling from environment will be
@@ -386,7 +387,7 @@ class EpisodicBuffer(BaseBuffer):
         Args:
             obs (_type_): _description_
                 shape: (seq_len, obs_dim)
-            env (RMVNormalizeVecObservation | gymnasium.Env | None): If None, no scaling is done.
+            env (RMVNormalizeVecObservation | gymz.Env | None): If None, no scaling is done.
 
         Returns:
             np.ndarray: Normalized observations.

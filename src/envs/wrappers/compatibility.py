@@ -10,8 +10,8 @@ class EnvProjectCompatibility(gymz.Wrapper):
     """
     def __init__(self, env: gymz.Env):
         
-        self.is_carl_env = True if isinstance(env, CARLEnv) else False
-        env.metadata['is_carl_env'] = self.is_carl_env
+        self.is_contextual_env = True if isinstance(env, CARLEnv) else False
+        env.metadata['is_contextual_env'] = self.is_contextual_env
 
         # CARLBraxEnv action space is gym.Space instead of gymz.Space, which is corrected 
         # for uniformity
@@ -27,7 +27,7 @@ class VecEnvProjectCompatibility(gymz.vector.VectorEnvWrapper):
     """
     def __init__(self, envs: gym.vector.VectorEnv):
         assert envs.is_vector_env, ValueError("The environment given is not vectorized.")
-        self.is_carl_env = envs.metadata.get('is_carl_env', False)
+        self.is_contextual_env = envs.metadata.get('is_contextual_env', False)
         
         super().__init__(envs)
         # # CARLBraxEnv action space is gym.Space instead of gymz.Space, which is corrected 

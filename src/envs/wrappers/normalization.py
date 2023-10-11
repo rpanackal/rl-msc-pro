@@ -23,10 +23,10 @@ class RMVNormalizeVecObservation(gymz.Wrapper):
         assert is_vector_env(env), "The env wrapped must be vectorized."
         super().__init__(env)
 
-        self.is_carl_env = env.is_carl_env
+        self.is_contextual_env = env.is_contextual_env
 
         # Running mean and variance of observations
-        if env.is_carl_env:
+        if env.is_contextual_env:
             self.mean = np.zeros(
                 self.single_observation_space["obs"].shape, dtype=np.float64
             )
@@ -47,7 +47,7 @@ class RMVNormalizeVecObservation(gymz.Wrapper):
         """
         observations, infos = self.env.reset(*args, **kwargs)
 
-        if self.is_carl_env:
+        if self.is_contextual_env:
             self.update_stats(observations["obs"])
             observations["obs"] = (
                 self.normalize_observations(observations["obs"])
@@ -71,7 +71,7 @@ class RMVNormalizeVecObservation(gymz.Wrapper):
         """
         observations, rewards, terminated, truncated, infos = super().step(actions)
 
-        if self.is_carl_env:
+        if self.is_contextual_env:
             self.update_stats(observations["obs"])
             observations["obs"] = (
                 self.normalize_observations(observations['obs'])

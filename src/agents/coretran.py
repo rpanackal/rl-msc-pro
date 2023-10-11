@@ -34,7 +34,7 @@ class CoretranAgent(GenericAgent):
             f"only continuous action space is supported, given {envs.single_action_space}"
         )
         if getattr(envs, "is_vector_env", None):
-            if envs.is_carl_env:
+            if envs.is_contextual_env:
                 envs.single_observation_space["obs"].dtype = np.float32
                 envs.single_observation_space["context"].dtype = np.float32
             else:
@@ -43,7 +43,7 @@ class CoretranAgent(GenericAgent):
             self.action_dim = np.prod(envs.single_action_space.shape)
             self.n_envs = envs.num_envs
         else:
-            if envs.is_carl_env:
+            if envs.is_contextual_env:
                 envs.observation_space["obs"].dtype = np.float32
                 envs.observation_space["context"].dtype = np.float32
             else:
@@ -232,7 +232,7 @@ class CoretranAgent(GenericAgent):
         # Loop over each sub-environment using the 'dones' array
         for idx, done in enumerate(dones):
             if done:  # if the sub-environment has terminated
-                if self.envs.is_carl_env:
+                if self.envs.is_contextual_env:
                     real_next_obs[idx] = infos["final_observation"][idx]["obs"]
                 else:
                     real_next_obs[idx] = infos["final_observation"][idx]
@@ -712,7 +712,7 @@ class CoretranAgent(GenericAgent):
 
         # Reset the environment and get initial observation
         curr_obs, _ = self.envs.reset()
-        if self.envs.is_carl_env:
+        if self.envs.is_contextual_env:
             curr_obs, context = curr_obs["obs"], curr_obs["context"]
 
         for _ in range(total_timesteps):
@@ -726,7 +726,7 @@ class CoretranAgent(GenericAgent):
             )
             # Execute actions in the environment
             next_obs, rewards, dones, infos = self.envs.step(actions)
-            if self.envs.is_carl_env:
+            if self.envs.is_contextual_env:
                 next_obs, context = next_obs["obs"], next_obs["context"]
 
             experience = (curr_obs, next_obs, actions, rewards, dones, infos)

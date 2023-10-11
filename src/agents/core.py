@@ -68,3 +68,22 @@ class CompactStateTransitions(BaseModel):
     model_config = {
         "arbitrary_types_allowed": True
     }
+
+class ContextualStateTransitions(BaseModel):
+    """A sequence of continuous transitions
+    of compact state, action, reward and dones."""
+
+    prompts: torch.Tensor
+    actions: torch.Tensor
+    rewards: torch.Tensor
+    dones: torch.Tensor
+    # next_prompts: torch.Tensor
+    contexts: torch.Tensor
+    loss: torch.Tensor | None
+    
+    observations: torch.Tensor
+    next_observations: torch.Tensor
+    
+    model_config = {
+        "arbitrary_types_allowed": True
+    }
