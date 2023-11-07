@@ -17,6 +17,7 @@ class SACAgentConfig(AgentConfig):
     autotune: bool = Field(True, description="Whether to automatically adjust the temperature parameter alpha")
     noise_clip: float = Field(0.5, description="Clip value for noise (Currently unused)")
     log_freq: int = Field(100, description="Logging frequency")
+    expanse_dim: int = Field(256, description="Expanse dimension of policy and critic networks.")
 
     buffer: SerializeAsAny[BufferConfig] = Field(BufferConfig(), description="Buffer configuration")
     actor_optimizer: OptimizerConfig = Field(OptimizerConfig(lr=3e-4), description="Optimizer settings for the actor")

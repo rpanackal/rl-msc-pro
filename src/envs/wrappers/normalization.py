@@ -20,7 +20,7 @@ class RMVNormalizeVecObservation(gymz.Wrapper):
         Initialize the wrapper by setting the environment to be wrapped
         and initializing mean and variance to None.
         """
-        assert is_vector_env(env), "The env wrapped must be vectorized."
+        # assert is_vector_env(env), "The env wrapped must be vectorized."
         super().__init__(env)
 
         self.is_contextual_env = env.is_contextual_env

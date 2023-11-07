@@ -4,7 +4,9 @@ from gymnasium.wrappers.compatibility import EnvCompatibility
 from .wrappers.normalization import RMVNormalizeVecObservation
 from shimmy.openai_gym_compatibility import _convert_space
 from .wrappers.compatibility import EnvProjectCompatibility, VecEnvProjectCompatibility
-
+from gymnasium.experimental.vector.utils import batch_space
+from .wrappers.batch_step import EnvVectorResponse
+from carl.envs.carl_env import CARLEnv
 
 def make_env(
     env: str | gymz.Env,
@@ -12,7 +14,7 @@ def make_env(
     n_envs: int,
     capture_video: bool,
     run_name: str,
-    normalize_observation: bool
+    normalize_observation: bool,
 ) -> gymz.vector.SyncVectorEnv:
     """
     Create a vectorized gymz environment wrapped with specified settings.
@@ -46,6 +48,7 @@ def make_env(
             else:
                 raise ValueError("The environment needs to be either a from Open AI Gym or Farma Foundation Gymnasium.")
 
+        e = EnvProjectCompatibility(e)
         # Seeding
         e.reset(seed=seed + idx)
         if hasattr(e, "action_space"):
@@ -56,15 +59,24 @@ def make_env(
         # Video capture
         if capture_video and idx == 0:
             e = gymz.wrappers.RecordVideo(e, f"videos/{run_name}")
-        e = EnvProjectCompatibility(e)
         return e
 
-    envs = gymz.vector.SyncVectorEnv([lambda: single_env(i) for i in range(n_envs)])
-    envs = VecEnvProjectCompatibility(envs)
-    envs = gymz.wrappers.RecordEpisodeStatistics(envs)    
-    envs = RMVNormalizeVecObservation(envs, is_observation_scaling=normalize_observation)
-    envs = gymz.wrappers.StepAPICompatibility(envs, output_truncation_bool=False)
-    envs = gymz.wrappers.PassiveEnvChecker(envs)
+    if n_envs > 1:
+        envs = gymz.vector.SyncVectorEnv([lambda: single_env(i) for i in range(n_envs)])
+        envs = VecEnvProjectCompatibility(envs)
+        envs = gymz.wrappers.RecordEpisodeStatistics(envs)    
+        envs = RMVNormalizeVecObservation(envs, is_observation_scaling=normalize_observation)
+        envs = gymz.wrappers.StepAPICompatibility(envs, output_truncation_bool=False)
+        envs = gymz.wrappers.PassiveEnvChecker(envs)
+    else:
+        envs = single_env(0)
+        envs = EnvVectorResponse(envs)
+        envs = gymz.wrappers.AutoResetWrapper(envs)
+        envs = gymz.wrappers.RecordEpisodeStatistics(envs)
+        # envs = RMVNormalizeVecObservation(envs, is_observation_scaling=normalize_observation)
+        envs = gymz.wrappers.StepAPICompatibility(envs, output_truncation_bool=False)
+        envs = gymz.wrappers.PassiveEnvChecker(envs)
+
     return envs
 
 if __name__ == "__main__":

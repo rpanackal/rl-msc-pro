@@ -8,23 +8,28 @@ LOG_STD_MAX = 2
 
 
 class Actor(nn.Module):
-    def __init__(self, env, feat_dim):
+    def __init__(self, env, feat_dim, expanse_dim=256):
         """Initialize the Actor model.
 
         Args:
             env: Gym environment. Used to get the observation and action dimensions.
         """
         super().__init__()
-        action_dim = np.prod(env.single_action_space.shape)
+        if hasattr(env, 'single_action_space'):
+            space = env.single_action_space
+        else:
+            space = env.action_space
+    
+        action_dim = np.prod(space.shape)
 
-        self.fc1 = nn.Linear(feat_dim, 256)
-        self.fc2 = nn.Linear(256, 256)
-        self.fc_mean = nn.Linear(256, action_dim)
-        self.fc_logstd = nn.Linear(256, action_dim)
+        self.fc1 = nn.Linear(feat_dim, expanse_dim)
+        self.fc2 = nn.Linear(expanse_dim, expanse_dim)
+        self.fc_mean = nn.Linear(expanse_dim, action_dim)
+        self.fc_logstd = nn.Linear(expanse_dim, action_dim)
 
         # Action rescaling parameters, to ensure actions are within bounds
-        action_scale = (env.single_action_space.high - env.single_action_space.low) / 2.0
-        action_bias = (env.single_action_space.high + env.single_action_space.low) / 2.0
+        action_scale = (space.high - space.low) / 2.0
+        action_bias = (space.high + space.low) / 2.0
 
         self.register_buffer(
             "action_scale", torch.tensor(action_scale, dtype=torch.float32)

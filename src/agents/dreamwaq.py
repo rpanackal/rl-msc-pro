@@ -12,15 +12,15 @@ from ..assets import Transformer
 from ..assets.models import Actor, SoftQNetwork
 from ..data.buffer import EpisodicBuffer, EpisodicBufferSamples
 from .core import GenericAgent, CompactStateTransitions, ContextualStateTransitions
-from ..utils import get_observation_dim
-
+from ..utils import get_observation_dim, get_action_dim, is_vector_env
+import gym
 
 class AdaptedDreamWAQ(GenericAgent):
     """Contextual Representation Learning via Time Series Transformers for Control" """
 
     def __init__(
         self,
-        envs: gymnasium.vector.SyncVectorEnv | gymnasium.Env,
+        envs: VectorEnv,
         repr_model: Transformer,
         repr_model_learning_rate: float,
         critic_learning_rate: float,
@@ -29,38 +29,48 @@ class AdaptedDreamWAQ(GenericAgent):
         device: torch.device,
         writer: SummaryWriter | None = None,
         log_freq: int = 100,
+        seed: int = 1,
+        expanse_dim: int = 256
     ):
-        assert isinstance(envs.single_action_space, gymnasium.spaces.Box), ValueError(
-            f"only continuous action space is supported, given {envs.single_action_space}"
+        super().__init__(envs)
+        self.device = device
+        self.critic_learning_rate = critic_learning_rate
+        self.writer = writer
+        self.log_freq = log_freq
+        self.seed = seed
+
+        self.is_vector_env: bool = is_vector_env(envs)
+        assert self.is_vector_env, "Environment not vectorized"
+
+        if self.is_vector_env:
+            self.single_observation_space = self.envs.single_observation_space
+            self.single_action_space = self.envs.single_action_space
+            self.n_envs = self.envs.num_envs
+        else:
+            self.single_observation_space = self.envs.observation_space
+            self.single_action_space = self.envs.action_space
+            self.n_envs = 1
+
+        assert isinstance(
+            self.single_action_space, (gymnasium.spaces.Box, gym.spaces.Box)
+        ), ValueError(
+            f"only continuous action space is supported, given {self.single_action_space}"
         )
 
-        assert envs.is_contextual_env, ValueError(
+        self.is_contextual_env: bool = getattr(self.envs, "is_contextual_env", False)
+        assert self.is_contextual_env, ValueError(
             f"Agent expects contextual environments to work correctly."
         )
 
-        if getattr(envs, "is_vector_env", None):
-            if envs.is_contextual_env:
-                envs.single_observation_space["obs"].dtype = np.float32
-                envs.single_observation_space["context"].dtype = np.float32
-                self.context_dim = np.prod(
-                    envs.single_observation_space["context"].shape
-                )
-            else:
-                envs.single_observation_space.dtype = np.float32
-            self.observation_dim = get_observation_dim(envs)
-            self.action_dim = np.prod(envs.single_action_space.shape)
-            self.n_envs = envs.num_envs
+        if self.is_contextual_env:
+            self.single_observation_space["obs"].dtype = np.float32
+            self.single_observation_space["context"].dtype = np.float32
         else:
-            if envs.is_contextual_env:
-                envs.observation_space["obs"].dtype = np.float32
-                envs.observation_space["context"].dtype = np.float32
-                self.context_dim = np.prod(envs.observation_space["context"].shape)
-            else:
-                envs.observation_space.dtype = np.float32
-            self.observation_dim = get_observation_dim(envs)
-            self.action_dim = np.prod(envs.action_space.shape)
-            self.n_envs = 1
+            self.single_observation_space.dtype = np.float32
 
+        self.observation_dim = get_observation_dim(self.envs)
+        self.action_dim = get_action_dim(self.envs)
+        
         self.repr_model = repr_model.float()
         # self.repr_model_target = repr_model.model_twin().to(device)
         # self.repr_model_target.load_state_dict(self.repr_model.state_dict())
@@ -71,13 +81,14 @@ class AdaptedDreamWAQ(GenericAgent):
         self.embed_dim = self.repr_model.embed_dim
         
         self.prompt_dim = self.embed_dim * self.src_seq_length
+        # TODO: What is context_dim
         self.critic_state_dim = self.observation_dim + self.context_dim
 
-        self.actor = Actor(envs, self.observation_dim + self.prompt_dim).to(device)
-        self.qf1 = SoftQNetwork(envs, self.critic_state_dim).to(device)
-        self.qf2 = SoftQNetwork(envs, self.critic_state_dim).to(device)
-        self.qf1_target = SoftQNetwork(envs, self.critic_state_dim).to(device)
-        self.qf2_target = SoftQNetwork(envs, self.critic_state_dim).to(device)
+        self.actor = Actor(envs, self.observation_dim + self.prompt_dim, expanse_dim).to(device)
+        self.qf1 = SoftQNetwork(envs, self.critic_state_dim, expanse_dim).to(device)
+        self.qf2 = SoftQNetwork(envs, self.critic_state_dim, expanse_dim).to(device)
+        self.qf1_target = SoftQNetwork(envs, self.critic_state_dim, expanse_dim).to(device)
+        self.qf2_target = SoftQNetwork(envs, self.critic_state_dim, expanse_dim).to(device)
         self.qf1_target.load_state_dict(self.qf1.state_dict())
         self.qf2_target.load_state_dict(self.qf2.state_dict())
 
@@ -99,16 +110,8 @@ class AdaptedDreamWAQ(GenericAgent):
             action_space=envs.single_action_space,
             device=device,
             n_envs=self.n_envs,
-            include_context=envs.is_contextual_env,
+            include_context=self.is_contextual_env,
         )
-
-        self.device = device
-        self.critic_learning_rate = critic_learning_rate
-        self.envs = envs
-        self.writer = writer
-        self.log_freq = log_freq
-
-        super().__init__(envs)
 
     def initialize(
         self,
@@ -212,21 +215,22 @@ class AdaptedDreamWAQ(GenericAgent):
         Note: log_probs and squashed_means will be None if the global step is less than
             learning_starts.
         """
+        actions = log_probs = squashed_means = None
         # Check if the agent should start learning
         if self.global_step < self.learning_starts:
             # Randomly sample actions if learning has not started
             actions = np.array(
-                [self.envs.single_action_space.sample() for _ in range(self.n_envs)]
+                [self.single_action_space.sample() for _ in range(self.n_envs)]
             )
-            log_probs = None
-            squashed_means = None
-        else:
-            # Convert states to Tensor if they're not already
-            if not isinstance(states, torch.Tensor):
-                states = torch.Tensor(states).to(self.device)
+            return actions, log_probs, squashed_means
 
-            # Use the actor model to sample actions, log_probs, and squashed_means
-            actions, log_probs, squashed_means = self.actor.get_action(states)
+        # Convert states to Tensor if they're not already
+        states = torch.as_tensor(
+            states, device=self.device, dtype=torch.float32
+        )
+
+        # Use the actor model to sample actions, log_probs, and squashed_means
+        actions, log_probs, squashed_means = self.actor.get_action(states)
         return actions, log_probs, squashed_means
 
     def preprocess_experience(self, experience):
@@ -240,17 +244,33 @@ class AdaptedDreamWAQ(GenericAgent):
         # For more info: https://stable-baselines3.readthedocs.io/en/master/guide/vec_envs.html
         # Create a copy of next_obs to avoid modifying the original one
         real_next_obs = next_obs.copy()
-
+        if self.is_vector_env:
         # Loop over each sub-environment using the 'dones' array
-        for idx, done in enumerate(dones):
-            if done:  # if the sub-environment has terminated
-                if self.envs.is_contextual_env:
-                    real_next_obs[idx] = infos["final_observation"][idx]["obs"]
+            for idx, done in enumerate(dones):
+                if done:  # if the sub-environment has terminated
+                    if self.is_contextual_env:
+                        real_next_obs[idx] = infos["final_observation"][idx]["obs"]
+                    else:
+                        real_next_obs[idx] = infos["final_observation"][idx]
+        else:
+            if dones:  # if the sub-environment has terminated
+                if self.is_contextual_env:
+                    real_next_obs = infos["final_observation"]["obs"]
                 else:
-                    real_next_obs[idx] = infos["final_observation"][idx]
+                    real_next_obs = infos["final_observation"]
+
 
         # Add any preprocessing code here
         return obs, real_next_obs, actions, rewards, dones, infos, context
+
+    def preprocess_observation(self, obs):
+        if self.is_contextual_env:
+            if not isinstance(obs, dict):
+                ValueError(
+                    "Contextual environments as expected to return dictionary observations."
+                )
+            return obs["obs"], obs["context"]
+        return obs, None
 
     def update_agent(self, experience):
         """
@@ -749,10 +769,7 @@ class AdaptedDreamWAQ(GenericAgent):
 
         # Reset the environment and get initial observation
         curr_obs, _ = self.envs.reset()
-
-        context = None
-        if self.envs.is_contextual_env:
-            curr_obs, context = curr_obs["obs"], curr_obs["context"]
+        curr_obs, curr_context = self.preprocess_observation(curr_obs)
 
         for _ in range(total_timesteps):
             # Sample actions
@@ -760,47 +777,43 @@ class AdaptedDreamWAQ(GenericAgent):
                 states = self.get_current_state(curr_obs)
                 actions, _, _ = self.sample_action(states)
 
-            actions = (
-                actions.cpu().numpy()
-                if not isinstance(actions, np.ndarray)
-                else actions
-            )
+            actions = actions.cpu().numpy() if torch.is_tensor(actions) else actions
             # Execute actions in the environment
             next_obs, rewards, dones, infos = self.envs.step(actions)
+            next_obs, next_context = self.preprocess_observation(next_obs)
 
-            next_context = None
-            if self.envs.is_contextual_env:
-                next_obs, next_context = next_obs["obs"], next_obs["context"]
-
-            experience = (curr_obs, next_obs, actions, rewards, dones, infos, context)
+            experience = (curr_obs, next_obs, actions, rewards, dones, infos, curr_context)
 
             # Prepare experience for agent update
             experience = self.preprocess_experience(experience)
 
             # Update the agent
             self.update_agent(experience)
+            assert np.array_equal(
+                curr_context, next_context
+            ), "Non-stationary environment"
+
 
             # Update the current observation
             curr_obs = next_obs
-
-            if self.envs.is_contextual_env:
-                context = next_context
+            curr_context = next_context
 
             # Log episodic information if available
             # Episodic information from any one of the environments is sufficient
-            if "episode" in infos:
+            if "episode" in infos or np.any(dones):
+                done_idx = np.argmax(dones)
                 print(
-                    f"global_step={self.global_step}, episodic_return={infos['episode']['r'][0]}"
+                    f"global_step={self.global_step}, episodic_return={infos['episode']['r'][done_idx]}"
                 )
                 if self.writer:
                     self.writer.add_scalar(
                         "train/episodic_return",
-                        infos["episode"]["r"][0],
+                        infos["episode"]["r"][done_idx],
                         self.global_step,
                     )
                     self.writer.add_scalar(
                         "train/episodic_length",
-                        infos["episode"]["l"][0],
+                        infos["episode"]["l"][done_idx],
                         self.global_step,
                     )
 

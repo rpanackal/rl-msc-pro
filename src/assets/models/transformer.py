@@ -112,7 +112,7 @@ class Transformer(nn.Module):
         # Initialize the additional heads
         if head_dims:
             self.additional_heads = nn.ModuleList([
-                nn.Linear(self.embed_dim * self.src_seq_length, dim) for dim in head_dims
+                nn.Linear(embed_dim * src_seq_length, dim) for dim in head_dims
             ])
 
         self.src_feat_dim = src_feat_dim

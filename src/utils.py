@@ -5,6 +5,8 @@ import torch
 import carl
 import typing
 import gymnasium as gymz
+import gym
+
 
 def inspect_head_d4rl_env(env, n_steps=1):
     """Inspect head of D4RL registered environments
@@ -16,7 +18,7 @@ def inspect_head_d4rl_env(env, n_steps=1):
     # Verify the state, action, next state from environment
     obs = env.reset()
     print("0 Starting state: env.reset - ", obs)
-    
+
     for i in range(n_steps):
         action = env.action_space.sample()
         obs, reward, done, info = env.step(action)
@@ -29,7 +31,7 @@ def inspect_head_d4rl_dataset(dataset, n_steps=1):
 
     Args:
         dataset (dict): A dictionary of keys like 'observations',
-            'rewards', 'actions' etc.. 
+            'rewards', 'actions' etc..
         n_steps (int, optional): Number of steps to print. Defaults to 1.
     """
     # Each task is associated with a dataset
@@ -42,17 +44,24 @@ def inspect_head_d4rl_dataset(dataset, n_steps=1):
             length = None
 
         print(f"{key} type : {type(value)} length: {length}")
-    
-    print("0 Starting state: dataset['observations'][i] - ", dataset['observations'][0])
-    for i in range(n_steps):
-        print(f"{i} Action taken: dataset['actions'][i] - ", dataset['actions'][i])
 
-        print(f"{i + 1} State: dataset['next_observations'][i]- ", dataset['next_observations'][i])
-        print(f"{i + 1} State: dataset['observations'][i+1] - ", dataset['observations'][i+1])
+    print("0 Starting state: dataset['observations'][i] - ", dataset["observations"][0])
+    for i in range(n_steps):
+        print(f"{i} Action taken: dataset['actions'][i] - ", dataset["actions"][i])
+
+        print(
+            f"{i + 1} State: dataset['next_observations'][i]- ",
+            dataset["next_observations"][i],
+        )
+        print(
+            f"{i + 1} State: dataset['observations'][i+1] - ",
+            dataset["observations"][i + 1],
+        )
+
 
 def sequence_d4rl_dataset(env, dataset=None, **kwargs):
     """
-    Returns an iterator through trajectories of D4RL 
+    Returns an iterator through trajectories of D4RL
     directed dataset.
 
     Args:
@@ -71,19 +80,19 @@ def sequence_d4rl_dataset(env, dataset=None, **kwargs):
     if dataset is None:
         dataset = env.get_dataset(**kwargs)
 
-    N = dataset['rewards'].shape[0]
+    N = dataset["rewards"].shape[0]
 
     data_ = collections.defaultdict(list)
 
-    use_timeouts = 'timeouts' in dataset
+    use_timeouts = "timeouts" in dataset
 
     episode_step = 0
     for i in range(N):
-        done_bool = bool(dataset['terminals'][i])
+        done_bool = bool(dataset["terminals"][i])
         if use_timeouts:
-            final_timestep = dataset['timeouts'][i]
+            final_timestep = dataset["timeouts"][i]
         else:
-            final_timestep = (episode_step == env._max_episode_steps - 1)
+            final_timestep = episode_step == env._max_episode_steps - 1
 
         for key, value in dataset.items():
             # We only retrive from values that span N items
@@ -104,7 +113,7 @@ def sequence_d4rl_dataset_numpy(self, env, split_length=None):
 
     Args:
         env (OfflineEnv): An gym registered offile environment.
-        split_length (_type_, optional): Split episodes into sequences of 
+        split_length (_type_, optional): Split episodes into sequences of
             length split_length. Defaults to None.
 
     Raises:
@@ -134,8 +143,7 @@ def sequence_d4rl_dataset_numpy(self, env, split_length=None):
         # Split observations, actions and rewards along time dimension
         # (episode_length, feat_dim) -> (n_parts, split_length, feat_dim)
         split_episodes = [
-            episode[key].reshape(n_parts, split_length, -1)
-            for key in key_features
+            episode[key].reshape(n_parts, split_length, -1) for key in key_features
         ]
 
         # Split observations, actions and rewards along feature dimension
@@ -148,13 +156,15 @@ def sequence_d4rl_dataset_numpy(self, env, split_length=None):
 
     return np.concatenate(dataset, axis=0)
 
+
 def set_torch_seed(seed, torch_deterministic=True):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.backends.cudnn.deterministic = torch_deterministic
 
-def flatten_dict(d, parent_key='', sep='.'):
+
+def flatten_dict(d, parent_key="", sep="."):
     items = {}
     for k, v in d.items():
         new_key = f"{parent_key}{sep}{k}" if parent_key else k
@@ -164,22 +174,77 @@ def flatten_dict(d, parent_key='', sep='.'):
             items[new_key] = v
     return items
 
-def is_vector_env(env):
-    return hasattr(env, 'num_envs') or getattr(env, 'is_vector_env', False)
 
-def get_observation_dim(env):
-    space = getattr(env, "single_observation_space", env.observation_space)
+def is_vector_env(env) -> bool:
+    return (
+        isinstance(env, (gymz.vector.VectorEnv, gym.vector.VectorEnv))
+        or hasattr(env.unwrapped, "single_observation_space")
+        or getattr(env.unwrapped, "is_vector_env", False)
+        or getattr(env, "num_envs", 1) > 1
+    )
 
+def get_space_dimension(space, env) -> int:
+    """
+    Calculate and return the dimension of the space.
+
+    Parameters:
+    space (Space): The space whose dimension is to be calculated.
+    env (Env): The environment instance to infer if it's a contextual environment.
+
+    Returns:
+    int: The dimension of the space.
+    """
+    # Check if the space is None and raise an error if it is
     if space is None:
-        ValueError("Observation space not found in environment.")
+        raise ValueError("Space not found in environment.")
+
+    return np.prod(space.shape).astype(int).item()
+
+
+def get_observation_dim(env: typing.Union[gymz.Env, gymz.vector.VectorEnv]) -> int:
+    """
+    Get the observation dimension of an environment.
+
+    Parameters:
+    env (Env): The environment whose observation dimension is to be calculated.
+
+    Returns:
+    int: The observation dimension of the environment.
+    """
+    # Determine the appropriate observation space
+    space = (
+        env.single_observation_space
+        if hasattr(env, "single_observation_space")
+        else env.observation_space
+    )
+
+    # Infer whether the environment is contextual
+    is_contextual_env = getattr(env, "is_contextual_env", False)
+
+    # Calculate the dimension based on whether the environment is contextual
+    if is_contextual_env:
+        space = space["obs"]
     
-    if getattr(env, 'is_contextual_env', False):
-        return np.prod(space["obs"].shape)
-    return np.prod(space.shape)
+    # Get the dimension of the observation space
+    return get_space_dimension(space, env)
 
-def get_action_dim(env):
-    space = getattr(env, "single_action_space", env.observation_space)
 
-    if space is None:
-        ValueError("Action space space not found in environment.")
-    return np.prod(env.single_action_space.shape)
+def get_action_dim(env: typing.Union[gymz.Env, gymz.vector.VectorEnv]) -> int:
+    """
+    Get the action dimension of an environment.
+
+    Parameters:
+    env (Env): The environment whose action dimension is to be calculated.
+
+    Returns:
+    int: The action dimension of the environment.
+    """
+    # Determine the appropriate action space
+    space = (
+        env.single_action_space
+        if hasattr(env, "single_action_space")
+        else env.action_space
+    )
+
+    # Get the dimension of the action space
+    return get_space_dimension(space, env)

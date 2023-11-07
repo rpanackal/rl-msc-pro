@@ -59,7 +59,6 @@ class EpisodicBuffer(BaseBuffer):
         self.overflow = False
 
         # To handle carl environment observation space
-        print(self.observation_space)
         if isinstance(self.observation_space, spaces.Dict) and "obs" in self.observation_space.keys():
             self.obs_shape = self.observation_space["obs"].shape
 

@@ -5,7 +5,7 @@ import torch.nn.functional as F
 import numpy as np
 
 class SoftQNetwork(nn.Module):
-    def __init__(self, env, feat_dim):
+    def __init__(self, env, feat_dim, expanse_dim=256):
         """Initialize the Soft Q-Network.
 
         Args:
@@ -15,15 +15,20 @@ class SoftQNetwork(nn.Module):
         self.env = env
         self.observation_dim = feat_dim
 
+        if hasattr(env, 'single_action_space'):
+            space = env.single_action_space
+        else:
+            space = env.action_space
+
         # Calculate total input size from observation and action space
         input_dim = feat_dim + np.prod(
-            env.single_action_space.shape
+            space.shape
         )
 
         # Define the neural network layers
-        self.fc1 = nn.Linear(input_dim, 256)
-        self.fc2 = nn.Linear(256, 256)
-        self.fc3 = nn.Linear(256, 1)
+        self.fc1 = nn.Linear(input_dim, expanse_dim)
+        self.fc2 = nn.Linear(expanse_dim, expanse_dim)
+        self.fc3 = nn.Linear(expanse_dim, 1)
 
     def forward(self, x, a):
         """Pass the observation and action through the neural network to get the Q-value.

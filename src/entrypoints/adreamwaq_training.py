@@ -6,7 +6,7 @@ from datetime import datetime
 
 import numpy as np
 import torch
-from carl.envs import CARLBraxHalfcheetah, CARLDmcQuadrupedEnv
+from carl.envs import CARLBraxHalfcheetah, CARLDmcQuadrupedEnv, CARLDmcWalkerEnv, CARLMountainCarContinuous
 from torch.utils.tensorboard import SummaryWriter
 
 from ..agents import AdaptedDreamWAQ
@@ -63,7 +63,7 @@ def main():
     set_torch_seed(config.random_seed)
 
     # Here only 1 environment
-    env = CARLDmcQuadrupedEnv(obs_context_as_dict=False, batch_size=1)
+    env = CARLDmcWalkerEnv(obs_context_as_dict=False, batch_size=1)
     envs = make_env(
         # env=config.env_id,
         env=env,
@@ -89,7 +89,7 @@ def main():
     print("Embedding dimension", config.agent.repr_model.embed_dim)
 
     config.agent.repr_model.head_dims = [np.prod(envs.single_observation_space['context'].shape).item()]
-    
+
     # Define Representation Model
     # ! Important: Reconstruction of complete source
     model = Transformer(
@@ -104,6 +104,7 @@ def main():
         tgt_seq_length=config.agent.repr_model.tgt_seq_length,
         cond_prefix_frac=config.agent.repr_model.cond_prefix_frac,
         dropout=config.agent.repr_model.dropout,
+        head_dims=config.agent.repr_model.head_dims
     ).to(config.device)
 
     print(model)

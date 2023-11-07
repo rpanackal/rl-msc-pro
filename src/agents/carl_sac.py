@@ -1,4 +1,5 @@
 import time
+
 import gym
 import gymnasium
 import numpy as np
@@ -15,14 +16,10 @@ import os
 from pathlib import PurePath
 
 
-class SACAgent(GenericAgent):
-    """A Soft Actor Critic agent implementation based off clean-RL.
-
-    Note: Extended to support contextual environments
-    """
+class CARLSACAgent(GenericAgent):
     def __init__(
         self,
-        envs: gymnasium.vector.VectorEnv,
+        envs: gymnasium.vector.VectorEnv,  # | gymnasium.Env,
         critic_learning_rate: float,
         actor_learning_rate: float,
         buffer_size: int,
@@ -40,9 +37,11 @@ class SACAgent(GenericAgent):
         self.seed = seed
 
         self.is_vector_env: bool = is_vector_env(envs)
-        assert self.is_vector_env, "Environment not vectorized"
+        # assert self.is_vector_env, "Environment not vectorized"
 
         if self.is_vector_env:
+            # * Change back to single_observation_* spaces if stable_baseline3..make_vec_env
+            # * not in use.
             self.single_observation_space = self.envs.single_observation_space
             self.single_action_space = self.envs.single_action_space
             self.n_envs = self.envs.num_envs
@@ -71,12 +70,8 @@ class SACAgent(GenericAgent):
         self.actor = Actor(self.envs, self.observation_dim, expanse_dim).to(device)
         self.qf1 = SoftQNetwork(self.envs, self.observation_dim, expanse_dim).to(device)
         self.qf2 = SoftQNetwork(self.envs, self.observation_dim, expanse_dim).to(device)
-        self.qf1_target = SoftQNetwork(self.envs, self.observation_dim, expanse_dim).to(
-            device
-        )
-        self.qf2_target = SoftQNetwork(self.envs, self.observation_dim, expanse_dim).to(
-            device
-        )
+        self.qf1_target = SoftQNetwork(self.envs, self.observation_dim, expanse_dim).to(device)
+        self.qf2_target = SoftQNetwork(self.envs, self.observation_dim, expanse_dim).to(device)
         self.qf1_target.load_state_dict(self.qf1.state_dict())
         self.qf2_target.load_state_dict(self.qf2.state_dict())
 
@@ -100,6 +95,8 @@ class SACAgent(GenericAgent):
             n_envs=self.n_envs,
             handle_timeout_termination=False,
         )
+
+        self.ep_tracker = TrackEpisodes(writer=self.writer, num_envs=self.n_envs)
 
     def initialize(
         self,
@@ -227,9 +224,7 @@ class SACAgent(GenericAgent):
     def preprocess_observation(self, obs):
         if self.is_contextual_env:
             if not isinstance(obs, dict):
-                ValueError(
-                    "Contextual environments as expected to return dictionary observations."
-                )
+                ValueError("Contextual environments as expected to return dictionary observations.")
             return obs["obs"], obs["context"]
         return obs, None
 
@@ -463,18 +458,21 @@ class SACAgent(GenericAgent):
         # Reset the environment and get initial observation
         curr_obs, _ = self.envs.reset()
         curr_obs, curr_context = self.preprocess_observation(curr_obs)
-        # print(curr_obs.shape)
-        # exit(0)
 
         for _ in range(total_timesteps):
             # Sample actions
             with torch.no_grad():
                 actions, _, _ = self.sample_action(curr_obs)  # (n_envs, action_dim)
+                # actions = actions.reshape(1, -1) if self.is_vector_env else actions
 
             actions = actions.cpu().numpy() if torch.is_tensor(actions) else actions
 
             # Execute actions in the
             next_obs, rewards, dones, infos = self.envs.step(actions)
+            self.ep_tracker.step(
+                global_step=self.global_step, rewards=rewards, dones=dones
+            )
+
             next_obs, next_context = self.preprocess_observation(next_obs)
 
             # Prepare experience for the agent's update
@@ -484,32 +482,35 @@ class SACAgent(GenericAgent):
 
             # Update the agent
             self.update_agent(experience)
+
             assert np.array_equal(
                 curr_context, next_context
             ), "Non-stationary environment"
 
-            
             # Update the current observation
             curr_obs = next_obs
+
             curr_context = next_context
             # Log episodic information if available
             # Episodic information from any one of the environments is sufficient
-            if "episode" in infos or np.any(dones):
-                done_idx = np.argmax(dones)
-                print(
-                    f"global_step={self.global_step}, episodic_return={infos['episode']['r'][done_idx]}"
-                )
-                if self.writer:
-                    self.writer.add_scalar(
-                        "train/episodic_return",
-                        infos["episode"]["r"][done_idx],
-                        self.global_step,
-                    )
-                    self.writer.add_scalar(
-                        "train/episodic_length",
-                        infos["episode"]["l"][done_idx],
-                        self.global_step,
-                    )
+            # TODO: Uncomment logging if TrackEpisode not present
+            # if "episode" in infos or np.any(dones):
+            #     done_idx = np.argmax(dones)
+            #     print(
+            #         f"global_step={self.global_step}, episodic_return={infos[done_idx]['episode']['r'].item()}"
+            #     )
+
+            #     if self.writer:
+            #         self.writer.add_scalar(
+            #             "train/episodic_return",
+            #             infos[done_idx]["episode"]["r"].item(),
+            #             self.global_step,
+            #         )
+            #         self.writer.add_scalar(
+            #             "train/episodic_length",
+            #             infos[done_idx]["episode"]["l"].item(),
+            #             self.global_step,
+            #         )
 
             # Log steps per second (SPS) every self.log_freq steps
             if self.global_step % self.log_freq == 0:
