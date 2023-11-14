@@ -6,8 +6,7 @@ from ..core.datamodels import EvaluationEpochResult
 from datetime import datetime
 from colorama import Fore, init
 from pathlib import PurePath
-from typing import Callable
-
+from typing import Callable, Union
 
 init(autoreset=True)
 
@@ -21,11 +20,11 @@ class SupervisedEvaluator:
         model: nn.Module,
         criterion,
         config,
-        custom_to_model: Callable | None = None,
-        custom_to_criterion: Callable | None = None,
-        writer: SummaryWriter | None = None,
+        custom_to_model: Union[Callable, None] = None,
+        custom_to_criterion: Union[Callable, None] = None,
+        writer: Union[SummaryWriter, None] = None,
         log_freq: int = 1,
-        checkpoint_dir: str | None = None,
+        checkpoint_dir: Union[str, None] = None,
     ) -> None:
         self.test_loader = test_loader
         self.model = model

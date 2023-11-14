@@ -8,7 +8,7 @@ import torch
 from torch.utils.data import Dataset
 
 from ..utils import sequence_d4rl_dataset
-
+from typing import Union
 
 class D4RLSequenceDataset(Dataset):
     feature_keys = ("observations", "actions", "rewards")
@@ -21,8 +21,8 @@ class D4RLSequenceDataset(Dataset):
         source_transform=None,
         target_transform=None,
         split_length=None,
-        src_features_keys: list | None = None,
-        tgt_features_keys: list | None = None,
+        src_features_keys: Union[list, None] = None,
+        tgt_features_keys: Union[list, None] = None,
         do_normalize: bool = True,
         epsilon: float = 1e-8
     ):
@@ -42,8 +42,8 @@ class D4RLSequenceDataset(Dataset):
                 Defaults to None.
             split_length (_type_, optional): If specified splits a sequence to create new 
                 sequences of length split_length. Defaults to None.
-            src_features_keys (tuple | None, optional): Features of source sequence. Defaults to None.
-            tgt_features_keys (tuple | None, optional): Features of target sequence. Defaults to None.
+            src_features_keys (Union[tuple, None], optional): Features of source sequence. Defaults to None.
+            tgt_features_keys (Union[tuple, None], optional): Features of target sequence. Defaults to None.
             epsilon (float) : Used in the denominator of z-score normalization for stability.
         """
         assert 0 < source_ratio < 1, ValueError(
@@ -121,7 +121,7 @@ class D4RLSequenceDataset(Dataset):
             ValueError: When split_length given, but episodes in dataset are variable length.
 
         Returns:
-            list | torch.Tensor: If sequences are same length then return a Tensor object, else a list.
+            Union[list, torch.Tensor]: If sequences are same length then return a Tensor object, else a list.
                 shape: (dataset_size, seq_len, feat_dim) 
         """
         dataset = []

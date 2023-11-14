@@ -3,6 +3,7 @@ from pydantic_settings import BaseSettings
 from .optimizer import OptimizerConfig
 from .data import BufferConfig
 from .assets import VariationalAutoformerConfig, TransformerConfig, AutoformerConfig
+from typing import Union
 
 class AgentConfig(BaseSettings):
     name: str = Field("", description="Name of the agent")
@@ -28,7 +29,7 @@ class CoreticAgentConfig(SACAgentConfig):
     state_seq_length: int = Field(2, description="Sequence length for the agent's state")
     kappa: float = Field(0.01, description="Controls the probability of 0 padding of trajectory sequences.")
 
-    repr_model: VariationalAutoformerConfig | AutoformerConfig
+    repr_model: Union[VariationalAutoformerConfig, AutoformerConfig]
     repr_model_optimizer: OptimizerConfig = Field(OptimizerConfig(lr=0.1), description="Optimizer settings for the representation model")
 
 class CoretranAgentConfig(SACAgentConfig):

@@ -3,7 +3,7 @@ import torch.nn as nn
 
 from .autoformer import Encoder, Decoder, Autoformer
 from ..layers import VariationalLayer
-
+from typing import Union
 
 class VariationalEncoder(Encoder):
     """
@@ -199,7 +199,7 @@ class VariationalAutoformer(Autoformer):
     def forward(
         self,
         source,
-        dec_init: torch.FloatTensor | None = None,
+        dec_init: Union[torch.FloatTensor, None] = None,
         src_mask=None,
         cross_mask=None,
         tgt_mask=None,

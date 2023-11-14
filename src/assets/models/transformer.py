@@ -9,7 +9,7 @@ from ..layers import (
 )
 import math
 from pydantic import BaseModel
-
+from typing import Union
 
 class EncoderBlock(nn.Module):
     def __init__(self, embed_dim, n_heads, expanse_dim, dropout) -> None:
@@ -133,7 +133,7 @@ class Transformer(nn.Module):
     def forward(
         self,
         source: torch.FloatTensor,
-        dec_init: torch.FloatTensor | None = None,
+        dec_init: Union[torch.FloatTensor, None] = None,
         full_output: bool = False,
         enc_only: bool = False,
     ):

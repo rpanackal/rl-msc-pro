@@ -14,7 +14,7 @@ from ..data.buffer import EpisodicBuffer, EpisodicBufferSamples
 from .core import GenericAgent, CompactStateTransitions, ContextualStateTransitionsV2
 from ..utils import is_vector_env
 import gym
-
+from typing import Union
 
 def get_space_dim(space):
     """
@@ -25,7 +25,7 @@ def get_space_dim(space):
         space: gymnaisum.space instance (Box or Dict)
 
     Returns:
-        dict | int: Dimensions of the space or a nested dictionary of dimensions
+        Union[dict, int]: Dimensions of the space or a nested dictionary of dimensions
     """
     if isinstance(space, gymz.spaces.Box):
         return np.prod(space.shape).astype(int).item()
@@ -36,7 +36,7 @@ def get_space_dim(space):
         raise TypeError("Unsupported space type")
 
 
-def get_observation_dim(env: gymz.Env | gymz.vector.VectorEnv) -> int:
+def get_observation_dim(env: Union[gymz.Env, gymz.vector.VectorEnv]) -> int:
     """
     Get the observation dimension of an environment.
 
@@ -57,7 +57,7 @@ def get_observation_dim(env: gymz.Env | gymz.vector.VectorEnv) -> int:
     return get_space_dim(space)
 
 
-def get_action_dim(env: gymz.Env | gymz.vector.VectorEnv) -> int:
+def get_action_dim(env: Union[gymz.Env, gymz.vector.VectorEnv]) -> int:
     """
     Get the action dimension of an environment.
 
@@ -90,7 +90,7 @@ class Adaptran(GenericAgent):
         actor_learning_rate: float,
         buffer_size: int,
         device: torch.device,
-        writer: SummaryWriter | None = None,
+        writer: Union[SummaryWriter, None] = None,
         log_freq: int = 100,
         expanse_dim: int = 256,
     ):
@@ -181,7 +181,7 @@ class Adaptran(GenericAgent):
         self,
         batch_size: int,
         learning_starts: int,
-        alpha: float | None,
+        alpha: Union[float, None],
         autotune: bool,
         gamma: float,
         policy_frequency: int,
@@ -197,7 +197,7 @@ class Adaptran(GenericAgent):
         Parameters:
             batch_size (int): Size of the minibatch.
             learning_starts (int): Number of environment steps to collect before training starts.
-            alpha (float | None): Scaling factor for the entropy term in the objective. If None,
+            alpha (Union[float, None]): Scaling factor for the entropy term in the objective. If None,
                 autotune is expected to be true and alpha learned automatically.
             autotune (bool): Whether to automatically tune the entropy scaling factor `alpha`.
             gamma (float): Discount factor for future rewards.
@@ -789,7 +789,7 @@ class Adaptran(GenericAgent):
         total_timesteps: int,
         batch_size: int,
         learning_starts: int,
-        alpha: float | None,
+        alpha: Union[float, None],
         autotune: bool,
         gamma: float,
         policy_frequency: int,
@@ -806,14 +806,14 @@ class Adaptran(GenericAgent):
             total_timesteps (int): The total number of timesteps to train the agent for.
             batch_size (int): The size of each batch of experiences used for training.
             learning_starts (int): The timestep at which learning should begin.
-            alpha (float | None): The temperature parameter for the SAC algorithm.
+            alpha (Union[float, None]): The temperature parameter for the SAC algorithm.
                 If None, it will be learned if autotune is True.
             autotune (bool): Whether to automatically tune the temperature parameter.
             gamma (float): The discount factor for future rewards.
             policy_frequency (int): The frequency with which the policy should be updated.
             target_network_frequency (int): The frequency of updating the target network.
             tau (float): The soft update coefficient for updating the target network.
-            state_seq_length (int | None): The length of state sequences produced by representation
+            state_seq_length (Union[int, None]): The length of state sequences produced by representation
                 model for critic update. Directly impact training time.
             kappa (float): The probability under which padded source sequences are used for training
                 generating states. In the first src_seq_len steps of an episode, zero padding is needed

@@ -4,7 +4,7 @@ import numpy as np
 import gymnasium as gymz
 from gymnasium.vector import VectorEnvWrapper
 from src.utils import is_vector_env
-
+from typing import Union
 
 class EnvVectorResponse(gymz.Wrapper):
     """A wrapper that matches non-vector environment response to that of a vector
@@ -17,7 +17,7 @@ class EnvVectorResponse(gymz.Wrapper):
         self.env.single_observation_space = env.observation_space
         self.env.single_action_space = env.action_space
 
-    def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None) -> tuple[Any, dict[str, Any]]:
+    def reset(self, *, seed: Union[int, None] = None, options: dict[str, Any] | None = None) -> tuple[Any, dict[str, Any]]:
         obs, info = super().reset(seed=seed, options=options)
 
         if self.env.is_contextual_env:

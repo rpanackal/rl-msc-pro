@@ -3,7 +3,7 @@ import torch.nn as nn
 
 from .transformer import Transformer
 from ..layers import VariationalLayer
-
+from typing import Union
 
 class VariationalTransformer(Transformer):
     def __init__(
@@ -42,7 +42,7 @@ class VariationalTransformer(Transformer):
     def forward(
         self,
         x_enc: torch.FloatTensor,
-        x_dec: torch.FloatTensor | None = None,
+        x_dec: Union[torch.FloatTensor, None] = None,
         full_output: bool = False,
         enc_only: bool = False,
     ):

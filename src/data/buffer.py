@@ -10,12 +10,12 @@ from src.utils import get_observation_dim
 
 
 class EpisodicBufferSamples(NamedTuple):
-    observations: th.Tensor | list[np.ndarray]
-    next_observations: th.Tensor | list[np.ndarray] | None
-    actions: th.Tensor | list[np.ndarray]
-    rewards: th.Tensor | list[np.ndarray]
-    dones: th.Tensor | list[np.ndarray]
-    contexts: th.Tensor | list[np.ndarray] | None
+    observations: Union[th.Tensor, list[np.ndarray]]
+    next_observations: Union[th.Tensor, list[np.ndarray]] | None
+    actions: Union[th.Tensor, list[np.ndarray]]
+    rewards: Union[th.Tensor, list[np.ndarray]]
+    dones: Union[th.Tensor, list[np.ndarray]]
+    contexts: Union[th.Tensor, list[np.ndarray]] | None
 
 
 class EpisodicBuffer(BaseBuffer):
@@ -96,7 +96,7 @@ class EpisodicBuffer(BaseBuffer):
         reward: np.ndarray,
         done: np.ndarray,
         infos: list[dict[str, Any]] = None,
-        context: np.ndarray | None = None,
+        context: Union[np.ndarray, None] = None,
     ) -> None:
         """
         Adds a new experience tuple to the episodic buffer.
@@ -138,8 +138,8 @@ class EpisodicBuffer(BaseBuffer):
     def sample(
         self,
         batch_size: int,
-        desired_length: int | None = None,
-        env: RMVNormalizeVecObservation | gymz.Env | None = None,
+        desired_length: Union[int, None] = None,
+        env: Union[RMVNormalizeVecObservation, gymz.Env, None] = None,
     ) -> EpisodicBufferSamples:
         """
         Samples a random batch of episodes from the episodic buffer.
@@ -211,8 +211,8 @@ class EpisodicBuffer(BaseBuffer):
         starts: np.ndarray,
         ends: np.ndarray,
         batch_size: int,
-        desired_length: int | None = None,
-        env: RMVNormalizeVecObservation | None = None,
+        desired_length: Union[int, None] = None,
+        env: Union[RMVNormalizeVecObservation, None] = None,
     ) -> EpisodicBufferSamples:
         """
         Internal method to retrieve samples based on given episode start and end indices.
@@ -314,7 +314,7 @@ class EpisodicBuffer(BaseBuffer):
 
     def get_last_episode(
         self,
-        env: RMVNormalizeVecObservation | gymz.Env | None = None,
+        env: Union[RMVNormalizeVecObservation, gymz.Env, None] = None,
     ):
         """
         Retrieves the last episode for each environment in the buffer.
@@ -377,7 +377,7 @@ class EpisodicBuffer(BaseBuffer):
     def normalize_obs(
         self,
         obs: np.ndarray,
-        env: RMVNormalizeVecObservation | gymz.Env | None = None,
+        env: Union[RMVNormalizeVecObservation, gymz.Env, None] = None,
     ):
         """The environment that is wrapped by RMVNormalizeVecObservation and
         is not scaling observations while sampling from environment will be
@@ -386,7 +386,7 @@ class EpisodicBuffer(BaseBuffer):
         Args:
             obs (_type_): _description_
                 shape: (seq_len, obs_dim)
-            env (RMVNormalizeVecObservation | gymz.Env | None): If None, no scaling is done.
+            env (Union[RMVNormalizeVecObservation, gymz.Env, None]): If None, no scaling is done.
 
         Returns:
             np.ndarray: Normalized observations.

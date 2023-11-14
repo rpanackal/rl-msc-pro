@@ -1,14 +1,16 @@
+import json
 import os
 from datetime import datetime
-import json
-import torch
-from torch import optim, nn
-from torch.utils.data import DataLoader
-from colorama import Fore, init
-from ..core.datamodels import LearningEpochResult
-from torch.utils.tensorboard import SummaryWriter
 from pathlib import PurePath
-from typing import Callable
+from typing import Callable, Union
+
+import torch
+from colorama import Fore, init
+from torch import nn, optim
+from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
+
+from ..core.datamodels import LearningEpochResult
 
 init(autoreset=True)
 
@@ -22,14 +24,14 @@ class SupervisedLearner:
         criterion: Callable,
         optimizer: optim.Optimizer,
         config,
-        train_loader: DataLoader | None = None,
-        valid_loader: DataLoader | None = None,
-        lr_scheduler: optim.lr_scheduler.LRScheduler | None = None,
-        custom_to_model: Callable | None = None,
-        custom_to_criterion: Callable | None = None,
-        writer: SummaryWriter | None = None,
+        train_loader: Union[DataLoader, None] = None,
+        valid_loader: Union[DataLoader, None] = None,
+        lr_scheduler: Union[optim.lr_scheduler.LRScheduler, None] = None,
+        custom_to_model: Union[Callable, None] = None,
+        custom_to_criterion: Union[Callable, None] = None,
+        writer: Union[SummaryWriter, None] = None,
         log_freq: int = 10,
-        checkpoint_dir: str | None = None,
+        checkpoint_dir: Union[str, None] = None,
     ) -> None:
         self.train_loader = train_loader
         self.valid_loader = valid_loader
@@ -71,10 +73,10 @@ class SupervisedLearner:
                 1: loss computed for batch
         """
         self._train_iter += 1
-        
+
         if not self.model.training:  # Checks if the model is in training mode
             self.model.train()
-    
+
         # resets the gradients after every batch
         self.optimizer.zero_grad()
 
@@ -243,7 +245,7 @@ class SupervisedLearner:
         incumbent_found = valid_loss < self.incumbent_loss
         if incumbent_found:
             self.incumbent_loss = valid_loss
-        
+
         if self.writer:
             self.writer.add_scalar("train/epoch/loss", train_loss, self._epoch)
             self.writer.add_scalar("validation/epoch/loss", valid_loss, self._epoch)
@@ -269,11 +271,11 @@ class SupervisedLearner:
     def to_model(self, batch):
         """
         Prepare the input for the model's forward pass.
-        
+
         Args:
             batch: tuple
                 The batch of data to be processed. It is assumed to be a tuple (X_batch, y_batch).
-        
+
         Returns:
             args: list
                 Positional arguments to pass to the model.
@@ -283,10 +285,10 @@ class SupervisedLearner:
         # Check if a custom function is provided, and if so, use it
         if self.custom_to_model:
             return self.custom_to_model(self, batch)
-        
+
         # Default behavior: unpack the batch and move to the device
         X_batch, _ = batch
-        
+
         args = [X_batch.to(self.device)]
         kwargs = {}
         return args, kwargs
@@ -294,13 +296,13 @@ class SupervisedLearner:
     def to_criterion(self, batch, output):
         """
         Prepare the inputs for the loss calculation.
-        
+
         Args:
             batch: tuple
                 The batch of data. It is assumed to be a tuple (X_batch, y_batch).
             output: tensor
                 The output from the model's forward pass.
-        
+
         Returns:
             args: list
                 Positional arguments to pass to the loss function.
@@ -310,10 +312,10 @@ class SupervisedLearner:
         # Check if a custom function is provided, and if so, use it
         if self.custom_to_criterion:
             return self.custom_to_criterion(self, batch, output)
-        
+
         # Default behavior: unpack the batch and move the label to the device
         _, y_batch = batch
-        
+
         args = [output, y_batch.to(self.device)]
         kwargs = {}
         return args, kwargs

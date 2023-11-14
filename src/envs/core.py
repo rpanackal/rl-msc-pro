@@ -7,9 +7,10 @@ from .wrappers.compatibility import EnvProjectCompatibility, VecEnvProjectCompat
 from gymnasium.experimental.vector.utils import batch_space
 from .wrappers.batch_step import EnvVectorResponse
 from carl.envs.carl_env import CARLEnv
+from typing import Union
 
 def make_env(
-    env: str | gymz.Env,
+    env: Union[str, gymz.Env],
     seed: int,
     n_envs: int,
     capture_video: bool,

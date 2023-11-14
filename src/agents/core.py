@@ -1,7 +1,7 @@
 import numpy as np
 from abc import ABC, abstractmethod
 import torch
-from typing import NamedTuple
+from typing import NamedTuple, Union
 from pydantic import BaseModel
 class GenericAgent(ABC):
     def __init__(self, env):
@@ -62,8 +62,8 @@ class CompactStateTransitions(BaseModel):
     actions: torch.Tensor
     rewards: torch.Tensor
     dones: torch.Tensor
-    next_states: torch.Tensor | None
-    loss: torch.Tensor | None
+    next_states: Union[torch.Tensor, None]
+    loss: Union[torch.Tensor, None]
     
     model_config = {
         "arbitrary_types_allowed": True
@@ -79,7 +79,7 @@ class ContextualStateTransitions(BaseModel):
     dones: torch.Tensor
     # next_prompts: torch.Tensor
     contexts: torch.Tensor
-    loss: torch.Tensor | None
+    loss: Union[torch.Tensor, None]
     
     observations: torch.Tensor
     next_observations: torch.Tensor
@@ -99,7 +99,7 @@ class ContextualStateTransitionsV2(BaseModel):
     # next_prompts: torch.Tensor
     pred_contexts: torch.Tensor
     true_contexts: torch.Tensor
-    loss: torch.Tensor | None
+    loss: Union[torch.Tensor, None]
     
     observations: torch.Tensor
     next_observations: torch.Tensor

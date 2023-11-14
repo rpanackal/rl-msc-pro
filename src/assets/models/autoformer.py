@@ -9,7 +9,7 @@ from ..layers import (
     PositionalEncoding,
     SeriesDecomposition,
 )
-
+from typing import Union
 
 class FeedForward(nn.Module):
     def __init__(
@@ -471,7 +471,7 @@ class Autoformer(nn.Module):
     def forward(
         self,
         source: torch.FloatTensor,
-        dec_init: torch.FloatTensor | None = None,
+        dec_init: Union[torch.FloatTensor, None] = None,
         src_mask=None,
         cross_mask=None,
         tgt_mask=None,
@@ -483,7 +483,7 @@ class Autoformer(nn.Module):
         Args:
             source (torch.FloatTensor): Input source sequence to encoder in feature space.
                 shape: (batch_size, src_seq_length, src_feat_dim)
-            dec_init (torch.FloatTensor | None): Conditioning input to decoder. Added to seasonal
+            dec_init (Union[torch.FloatTensor, None]): Conditioning input to decoder. Added to seasonal
                 initalizaiton along the target sequence length. The feature dimension needs
                 to be less than src_feat_dim.
                 shape: (batch_size, tgt_seq_length, some_dim)
@@ -495,7 +495,7 @@ class Autoformer(nn.Module):
             enc_only (bool, optional): Whether to use encoder only. Defaults to False.
 
         Returns:
-            tuple[Tensor, 1 | 2]:
+            tuple[Tensor, Union[1, 2]]:
                 0: (torch.FloatTensor): The sum of trend and seasonal part produced
                     by decoder.
                     shape: (batch_size, tgt_seq_length, tgt_feat_dim)

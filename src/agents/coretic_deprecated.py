@@ -13,21 +13,21 @@ from ..assets.models import Actor, SoftQNetwork
 from ..data.buffer import EpisodicBuffer, EpisodicBufferSamples
 from .core import GenericAgent
 from ..meters.timer import Timer
-
+from typing import Union
 
 class CoreticAgentV0(GenericAgent):
     """Contextual Representation Learning via Time Series Transformers for Control" """
 
     def __init__(
         self,
-        envs: gym.vector.SyncVectorEnv | gym.Env,
+        envs: Union[gym.vector.SyncVectorEnv, gym.Env],
         repr_model: Autoformer,
         repr_model_learning_rate: float,
         critic_learning_rate: float,
         actor_learning_rate: float,
         buffer_size: int,
         device: torch.device,
-        writer: SummaryWriter | None = None,
+        writer: Union[SummaryWriter, None] = None,
         log_freq: int = 100,
     ):
         assert isinstance(envs.single_action_space, gym.spaces.Box), ValueError(
@@ -89,13 +89,13 @@ class CoreticAgentV0(GenericAgent):
         self,
         batch_size: int,
         learning_starts: int,
-        alpha: float | None,
+        alpha: Union[float, None],
         autotune: bool,
         gamma: float,
         policy_frequency: int,
         target_network_frequency: int,
         tau: float,
-        state_seq_length: int | None = None,
+        state_seq_length: Union[int, None] = None,
     ):
         """
         Initialize a single training run. Sets up essential hyperparameters and configurations.
@@ -103,14 +103,14 @@ class CoreticAgentV0(GenericAgent):
         Parameters:
             batch_size (int): Size of the minibatch.
             learning_starts (int): Number of environment steps to collect before training starts.
-            alpha (float | None): Scaling factor for the entropy term in the objective. If None,
+            alpha (Union[float, None]): Scaling factor for the entropy term in the objective. If None,
                 autotune is expected to be true and alpha learned automatically.
             autotune (bool): Whether to automatically tune the entropy scaling factor `alpha`.
             gamma (float): Discount factor for future rewards.
             policy_frequency (int): Frequency with which to update the policy network.
             target_network_frequency (int): Frequency with which to update the target network.
             tau (float): Soft update factor.
-            state_seq_length (int | None): The length of state sequences produced by representation
+            state_seq_length (Union[int, None]): The length of state sequences produced by representation
                 model for critic update. Directly impact training time.
 
         Raises:
@@ -1154,7 +1154,7 @@ class CoreticAgentV0(GenericAgent):
         total_timesteps: int,
         batch_size: int,
         learning_starts: int,
-        alpha: float | None,
+        alpha: Union[float, None],
         autotune: bool,
         gamma: float,
         policy_frequency: int,
@@ -1169,14 +1169,14 @@ class CoreticAgentV0(GenericAgent):
             total_timesteps (int): The total number of timesteps to train the agent for.
             batch_size (int): The size of each batch of experiences used for training.
             learning_starts (int): The timestep at which learning should begin.
-            alpha (float | None): The temperature parameter for the SAC algorithm.
+            alpha (Union[float, None]): The temperature parameter for the SAC algorithm.
                 If None, it will be learned if autotune is True.
             autotune (bool): Whether to automatically tune the temperature parameter.
             gamma (float): The discount factor for future rewards.
             policy_frequency (int): The frequency with which the policy should be updated.
             target_network_frequency (int): The frequency of updating the target network.
             tau (float): The soft update coefficient for updating the target network.
-            state_seq_length (int | None): The length of state sequences produced by representation
+            state_seq_length (Union[int, None]): The length of state sequences produced by representation
                 model for critic update. Directly impact training time.
         """
         self.initialize(

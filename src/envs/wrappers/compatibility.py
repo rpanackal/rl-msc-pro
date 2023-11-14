@@ -6,14 +6,14 @@ from shimmy.openai_gym_compatibility import _convert_space
 from carl.envs.carl_env import CARLEnv
 from ...utils import is_vector_env
 import numpy as np
-
+from typing import Union
 
 class EnvProjectCompatibility(gymz.Wrapper):
     """A wrapper that adds convenient methods and attributes to non-vectorized environments
     to work well with other environments and utilities.
     """
 
-    def __init__(self, env: gymz.Env | gym.Env):
+    def __init__(self, env: Union[gymz.Env, gym.Env]):
         if is_vector_env(env):
             raise ValueError(
                 "Use VecEnvProjectCompatibility wrapper for vectorized environments"
@@ -44,7 +44,7 @@ class VecEnvProjectCompatibility(gymz.vector.VectorEnvWrapper):
     to work well with other environments and utilities.
     """
 
-    def __init__(self, env: gymz.vector.VectorEnv | gym.vector.VectorEnv):
+    def __init__(self, env: Union[gymz.vector.VectorEnv, gym.vector.VectorEnv]):
         if not is_vector_env(env):
             raise ValueError("The environment given is not vectorized.")
 
