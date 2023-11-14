@@ -1,7 +1,7 @@
 import time
 from datetime import datetime
 from pathlib import PurePath
-from typing import Union
+from typing import Union, Type
 
 import carl
 import gym
@@ -26,11 +26,20 @@ from shimmy.openai_gym_compatibility import _convert_space
 from torch.utils.tensorboard import SummaryWriter
 
 from ..agents.sac import SACAgent
-from ..config import OptimizerConfig, ReinforcedLearnerConfig, SACAgentConfig, BufferConfig
+from ..config import (
+    OptimizerConfig,
+    ReinforcedLearnerConfig,
+    SACAgentConfig,
+    BufferConfig,
+)
 from ..envs.core import make_env
 from ..utils import get_action_dim, get_observation_dim, set_torch_seed
 from ..envs.wrappers.normalization import RMVNormalizeVecObservation
-from ..envs.wrappers.compatibility import VecEnvProjectCompatibility, EnvProjectCompatibility
+from ..envs.wrappers.compatibility import (
+    VecEnvProjectCompatibility,
+    EnvProjectCompatibility,
+)
+
 
 def setup_env(
     env_cls_name,
@@ -46,10 +55,18 @@ def setup_env(
     def make_env():
         """Create and return an environment instance."""
         if env_suite == "carl":
-            EnvCls = eval(env_cls_name)
+            EnvCls: Type[
+                Union[
+                    CARLBraxHalfcheetah,
+                    CARLDmcQuadrupedEnv,
+                    CARLDmcWalkerEnv,
+                    CARLMountainCarContinuous,
+                    CARLPendulum,
+                ]
+            ] = eval(env_cls_name)
 
             # Just one context feature used
-            # obs_context_features = [list(EnvCls.get_context_features().keys())[0]]
+            obs_context_features = [list(EnvCls.get_context_features().keys())[0]]
 
             e: Union[
                 CARLBraxHalfcheetah,
@@ -89,9 +106,12 @@ def setup_env(
     vec_env = gymz.vector.SyncVectorEnv([make_env for i in range(n_envs)])
     vec_env = VecEnvProjectCompatibility(vec_env)
     vec_env = RecordEpisodeStatistics(vec_env)
-    vec_env = RMVNormalizeVecObservation(vec_env, is_observation_scaling=normalize_observation)
+    vec_env = RMVNormalizeVecObservation(
+        vec_env, is_observation_scaling=normalize_observation
+    )
     vec_env = gymz.wrappers.StepAPICompatibility(vec_env, output_truncation_bool=False)
     return vec_env
+
 
 if __name__ == "__main__":
     config = ReinforcedLearnerConfig(
@@ -100,21 +120,21 @@ if __name__ == "__main__":
         normalize_observation=True,
         agent=SACAgentConfig(
             name="CARLSAC",
-            tau=0.01,
-            autotune=False,
             actor_optimizer=OptimizerConfig(lr=3e-4),
             critic_optimizer=OptimizerConfig(lr=3e-4),
             policy_frequency=32,
+            tau=0.01,
+            autotune=False,
             alpha=0.1,
             gamma=0.9999,
             buffer=BufferConfig(buffer_size=5e4),
-            expanse_dim=64
+            expanse_dim=64,
         ),
         total_timesteps=1e5,
         device=torch.device("cuda:6" if torch.cuda.is_available() else "cpu"),
         n_envs=1,
         learning_starts=1e3,
-        random_seed=60
+        random_seed=60,
     )
     current_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     config.name = f"{config.env_id}_{config.agent.name}_{current_datetime}"
@@ -149,8 +169,8 @@ if __name__ == "__main__":
         buffer_size=config.agent.buffer.buffer_size,
         device=config.device,
         writer=writer,
-        seed=config.random_seed,
-        expanse_dim=config.agent.expanse_dim
+        log_freq=config.agent.log_freq,
+        expanse_dim=config.agent.expanse_dim,
     )
 
     agent.train(

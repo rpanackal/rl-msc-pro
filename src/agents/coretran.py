@@ -402,6 +402,7 @@ class CoretranAgent(GenericAgent):
                 enc_output, start_dim=1, end_dim=2
             )
             # state_transitions.states[:, t - start, :] = enc_output[:, -1, :]
+            # ? Should loss be added across all state_seq_length time steps ?
             state_transitions.loss = total_loss
             # 4. Store final element along sequence dimension of enc_output as the state s_t,
             # Map times steps from source to time steps in trajectory.

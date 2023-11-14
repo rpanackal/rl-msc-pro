@@ -1,6 +1,6 @@
 import time
 
-import gymnasium
+import gymnasium as gymz
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -11,12 +11,75 @@ from torch.utils.tensorboard import SummaryWriter
 from ..assets import Transformer
 from ..assets.models import Actor, SoftQNetwork
 from ..data.buffer import EpisodicBuffer, EpisodicBufferSamples
-from .core import GenericAgent, CompactStateTransitions, ContextualStateTransitions
-from ..utils import get_observation_dim, get_action_dim, is_vector_env
+from .core import GenericAgent, CompactStateTransitions, ContextualStateTransitionsV2
+from ..utils import is_vector_env
 import gym
 
-class AdaptedDreamWAQ(GenericAgent):
-    """Contextual Representation Learning via Time Series Transformers for Control" """
+
+def get_space_dim(space):
+    """
+    Recursively get dimensions of a gym space.
+    Supports Box spaces and nested Dict spaces containing Box spaces.
+
+    Parameters:
+        space: gymnaisum.space instance (Box or Dict)
+
+    Returns:
+        dict | int: Dimensions of the space or a nested dictionary of dimensions
+    """
+    if isinstance(space, gymz.spaces.Box):
+        return np.prod(space.shape).astype(int).item()
+    elif isinstance(space, gymz.spaces.Dict):
+        # Recursively call for nested Dict spaces
+        return {key: get_space_dim(subspace) for key, subspace in space.spaces.items()}
+    else:
+        raise TypeError("Unsupported space type")
+
+
+def get_observation_dim(env: gymz.Env | gymz.vector.VectorEnv) -> int:
+    """
+    Get the observation dimension of an environment.
+
+    Parameters:
+        env (Env): The environment whose observation dimension is to be calculated.
+
+    Returns:
+        int: The observation dimension of the environment.
+    """
+    # Determine the appropriate observation space
+    space = (
+        env.single_observation_space
+        if hasattr(env, "single_observation_space")
+        else env.observation_space
+    )
+
+    # Get the total dimensions of the space
+    return get_space_dim(space)
+
+
+def get_action_dim(env: gymz.Env | gymz.vector.VectorEnv) -> int:
+    """
+    Get the action dimension of an environment.
+
+    Parameters:
+        env (Env): The environment whose action dimension is to be calculated.
+
+    Returns:
+        int: The action dimension of the environment.
+    """
+    # Determine the appropriate action space
+    space = (
+        env.single_action_space
+        if hasattr(env, "single_action_space")
+        else env.action_space
+    )
+
+    # Get the dimension of the action space
+    return get_space_dim(space)
+
+
+class Adaptran(GenericAgent):
+    """Adaptive Representation Learning via Transformers for Control" """
 
     def __init__(
         self,
@@ -29,15 +92,14 @@ class AdaptedDreamWAQ(GenericAgent):
         device: torch.device,
         writer: SummaryWriter | None = None,
         log_freq: int = 100,
-        seed: int = 1,
-        expanse_dim: int = 256
+        expanse_dim: int = 256,
     ):
         super().__init__(envs)
         self.device = device
         self.critic_learning_rate = critic_learning_rate
         self.writer = writer
         self.log_freq = log_freq
-        self.seed = seed
+        self.state_seq_length = 2  # min sequence length of state to actor and critic
 
         self.is_vector_env: bool = is_vector_env(envs)
         assert self.is_vector_env, "Environment not vectorized"
@@ -49,14 +111,9 @@ class AdaptedDreamWAQ(GenericAgent):
         else:
             self.single_observation_space = self.envs.observation_space
             self.single_action_space = self.envs.action_space
-            self.n_envs = 1
-
-        assert isinstance(
-            self.single_action_space, (gymnasium.spaces.Box, gym.spaces.Box)
-        ), ValueError(
-            f"only continuous action space is supported, given {self.single_action_space}"
+        assert isinstance(envs.single_action_space, gymz.spaces.Box), ValueError(
+            f"only continuous action space is supported, given {envs.single_action_space}"
         )
-
         self.is_contextual_env: bool = getattr(self.envs, "is_contextual_env", False)
         assert self.is_contextual_env, ValueError(
             f"Agent expects contextual environments to work correctly."
@@ -68,7 +125,12 @@ class AdaptedDreamWAQ(GenericAgent):
         else:
             self.single_observation_space.dtype = np.float32
 
-        self.observation_dim = get_observation_dim(self.envs)
+        obs_context_dim: dict = get_observation_dim(self.envs)
+        self.observation_dim, self.context_dim = (
+            obs_context_dim["obs"],
+            obs_context_dim["context"],
+        )
+
         self.action_dim = get_action_dim(self.envs)
 
         self.repr_model = repr_model.float()
@@ -79,16 +141,18 @@ class AdaptedDreamWAQ(GenericAgent):
         self.src_seq_length = self.repr_model.src_seq_length
         self.tgt_seq_length = self.repr_model.tgt_seq_length
         self.embed_dim = self.repr_model.embed_dim
-        
-        self.prompt_dim = self.embed_dim * self.src_seq_length
-        self.context_dim = np.prod(self.single_observation_space["context"].shape).item()
-        self.critic_state_dim = self.observation_dim + self.context_dim
 
-        self.actor = Actor(envs, self.observation_dim + self.prompt_dim, expanse_dim).to(device)
-        self.qf1 = SoftQNetwork(envs, self.critic_state_dim, expanse_dim).to(device)
-        self.qf2 = SoftQNetwork(envs, self.critic_state_dim, expanse_dim).to(device)
-        self.qf1_target = SoftQNetwork(envs, self.critic_state_dim, expanse_dim).to(device)
-        self.qf2_target = SoftQNetwork(envs, self.critic_state_dim, expanse_dim).to(device)
+        self.latent_dim = self.embed_dim * self.src_seq_length
+        #! You left here
+        # * The latent removed from state
+        total_flat_ip = self.context_dim + self.observation_dim # + self.latent_dim 
+
+        # TODO: Change input dimension as per the logic
+        self.actor = Actor(envs, total_flat_ip, expanse_dim).to(device)
+        self.qf1 = SoftQNetwork(envs, total_flat_ip, expanse_dim).to(device)
+        self.qf2 = SoftQNetwork(envs, total_flat_ip, expanse_dim).to(device)
+        self.qf1_target = SoftQNetwork(envs, total_flat_ip, expanse_dim).to(device)
+        self.qf2_target = SoftQNetwork(envs, total_flat_ip, expanse_dim).to(device)
         self.qf1_target.load_state_dict(self.qf1.state_dict())
         self.qf2_target.load_state_dict(self.qf2.state_dict())
 
@@ -147,7 +211,6 @@ class AdaptedDreamWAQ(GenericAgent):
                 as complete source sequence doesn't exit. This hyperparameter controls the probability
                 of paded source sequences are used for generating states, as it might be crucial to
                 generate robust state representation at episode starts.
-
                 Heuristic: (source sequence length * 10) / average episode
             kl_weight (float): A scalar term weight of KL divergence term against the reconstruction
                 loss term in the overall representation model loss function.
@@ -192,7 +255,8 @@ class AdaptedDreamWAQ(GenericAgent):
         self.state_seq_length = state_seq_length
 
         # Minimum length of trajectory sampled from replay buffer
-        self.min_trajectory_length = self.src_seq_length + self.tgt_seq_length
+        self.min_trajectory_length = self.src_seq_length  # For source reconstruction
+        # self.min_trajectory_length = self.src_seq_length + self.tgt_seq_length # For prediction
 
         # Initialize the global step counter
         self.global_step = 0
@@ -202,7 +266,7 @@ class AdaptedDreamWAQ(GenericAgent):
         Sample an action from the policy given the current states.
 
         Args:
-            states: The current state states from the environment.
+            states: The current state from the environment.
                 shape: (batch_size, state_seq_len, repr_dim)
             to_numpy (bool): Flag indicating whether to convert the tensor outputs to
                 NumPy arrays. Useful when sampled actions are stored in replay buffer.
@@ -225,17 +289,16 @@ class AdaptedDreamWAQ(GenericAgent):
             return actions, log_probs, squashed_means
 
         # Convert states to Tensor if they're not already
-        states = torch.as_tensor(
-            states, device=self.device, dtype=torch.float32
-        )
+        states = torch.as_tensor(states, device=self.device, dtype=torch.float32)
 
         # Use the actor model to sample actions, log_probs, and squashed_means
+        # TODO: state to be composed of temporal observations, latent and context features.
         actions, log_probs, squashed_means = self.actor.get_action(states)
         return actions, log_probs, squashed_means
 
     def preprocess_experience(self, experience):
         """Preprocess experience if needed (e.g., stacking frames, normalizing)."""
-        # Assuming experience is a tuple: (obs, next_obs, actions, rewards, dones, infos, context)
+        # Assuming experience is a tuple: (obs, next_obs, actions, rewards, dones, infos)
         obs, next_obs, actions, rewards, dones, infos, context = experience
 
         # TRY NOT TO MODIFY: save data to reply buffer; handle `terminal_observation`
@@ -244,26 +307,20 @@ class AdaptedDreamWAQ(GenericAgent):
         # For more info: https://stable-baselines3.readthedocs.io/en/master/guide/vec_envs.html
         # Create a copy of next_obs to avoid modifying the original one
         real_next_obs = next_obs.copy()
-        if self.is_vector_env:
+
         # Loop over each sub-environment using the 'dones' array
-            for idx, done in enumerate(dones):
-                if done:  # if the sub-environment has terminated
-                    if self.is_contextual_env:
-                        real_next_obs[idx] = infos["final_observation"][idx]["obs"]
-                    else:
-                        real_next_obs[idx] = infos["final_observation"][idx]
-        else:
-            if dones:  # if the sub-environment has terminated
+        for idx, done in enumerate(dones):
+            if done:  # if the sub-environment has terminated
                 if self.is_contextual_env:
-                    real_next_obs = infos["final_observation"]["obs"]
+                    real_next_obs[idx] = infos["final_observation"][idx]["obs"]
                 else:
-                    real_next_obs = infos["final_observation"]
+                    real_next_obs[idx] = infos["final_observation"][idx]
 
-
+        # ! Omitted logic for non-vec envs, as vec env will be the standard here on!
         # Add any preprocessing code here
         return obs, real_next_obs, actions, rewards, dones, infos, context
 
-    def preprocess_observation(self, obs):
+    def unpack_observation(self, obs):
         if self.is_contextual_env:
             if not isinstance(obs, dict):
                 ValueError(
@@ -364,39 +421,36 @@ class AdaptedDreamWAQ(GenericAgent):
             dim=1,
         )
 
-        # TODO: For source reconstruction task the min_traj_length doesn't include tgt_seq_length
-        # 2. Compute target all target sequences in trajectory (task: TSF)
+        # 2. Compute target all target sequences in trajectory
         # targets = samples.observations[:, 1:, :]
         # conditionals = samples.actions[:, 1:, :]
-        # contexts = samples.contexts
 
         # 3. Compute index in sources to start sampling source from.
         start_atmost = self.src_seq_length - 1
         start_atleast = 0
         # With a probability  1 - kappa, start is start_atmost, else,
-        # start is uniformly from anywhere in [0..start_atmost]
+        # start is uniformly from anywhere in 0..start_atmost
         start = (
             torch.randint(start_atleast, start_atmost + 1, (1,)).item()
             if torch.rand(1).item() < self.kappa
             else (start_atmost)
         )
-        end = start + self.state_seq_length  # exclusive
-        
-        # TODO: Adapt repr dim
-        state_transitions = ContextualStateTransitions(
-            prompts=torch.empty(
-                (self.batch_size, self.state_seq_length, self.prompt_dim)
+        end = start + self.state_seq_length
+
+        state_transitions = ContextualStateTransitionsV2(
+            latents=torch.empty(
+                (self.batch_size, self.state_seq_length, self.latent_dim)
             ).to(self.device),
-            # next_prompts=torch.empty(
-            #     (self.batch_size, self.state_seq_length - 1, self.repr_dim)
-            # ).to(self.device),
+            pred_contexts=torch.empty(
+                (self.batch_size, self.state_seq_length, self.context_dim)
+            ).to(self.device),
+            true_contexts=samples.contexts[:, start:end],
             observations=samples.observations[:, start:end],
+            next_observations=samples.next_observations[:, start:end],
             actions=samples.actions[:, start:end, :],
             rewards=samples.rewards[:, start:end],
             dones=samples.dones[:, start:end],
-            next_observations=samples.next_observations[:,start:end],
-            contexts=samples.contexts[:, start:end],
-            loss=None,
+            loss=torch.zeros(1).to(self.device),
         )
 
         self.repr_model.train()
@@ -410,44 +464,45 @@ class AdaptedDreamWAQ(GenericAgent):
 
             # target = targets[:, t : t + self.tgt_seq_length, :]
             # conditional = conditionals[:, t : t + self.tgt_seq_length, :]
-            context = samples.contexts[:, t, :]
 
             # 3. Produce state representations and future observations
-            dec_output, enc_output, context_head_output = self.repr_model(source, full_output=True)
+            (
+                dec_output,
+                enc_output,
+                [
+                    context_head_output,
+                ],
+            ) = self.repr_model(source, full_output=True)
 
             # 5. Compute representation model loss
             recon_loss = F.mse_loss(dec_output, source)
-
-            # Interpret first 'context_dim' many components to be context features
-            context_loss = F.mse_loss(
-                torch.flatten(enc_output, start_dim=1, end_dim=2)[
-                    :, : self.context_dim
-                ],
-                context,
-            )
+            context_loss = F.mse_loss(context_head_output, samples.contexts[:, t, :])
             # kl_loss = -0.5 * torch.sum(1 + logvar - mean.pow(2) - logvar.exp())
-            total_loss = recon_loss + context_loss # + self.kl_weight * kl_loss
+            total_loss = recon_loss + context_loss  # + self.kl_weight * kl_loss
 
             # # 6. Perform backpropagation to update the representation learning model.
-            self.repr_optimizer.zero_grad()
-            total_loss.backward()
-            self.repr_optimizer.step()
+            # self.repr_optimizer.zero_grad()
+            # total_loss.backward()
+            # self.repr_optimizer.step()
 
             # Log Q-function loss information of last state in sequence every log_freq steps.
             if self.global_step % self.log_freq == 0 and self.writer:
                 self.writer.add_scalar(
                     "losses/repr_loss", total_loss.item(), self.global_step
                 )
+                self.writer.add_scalar(
+                    "losses/context_loss", context_loss.item(), self.global_step
+                )
 
-            state_transitions.prompts[:, t - start, :] = torch.flatten(
+            state_transitions.pred_contexts[:, t - start, :] = context_head_output
+            state_transitions.latents[:, t - start, :] = torch.flatten(
                 enc_output, start_dim=1, end_dim=2
             )
-            # state_transitions.states[:, t - start, :] = enc_output[:, -1, :]
-            state_transitions.loss = total_loss
-            # 4. Store final element along sequence dimension of enc_output as the state s_t,
-            # Map times steps from source to time steps in trajectory.
+            state_transitions.loss += total_loss
 
             # * No need of target context representations, as critic has access to true context
+            # 4. Store final element along sequence dimension of enc_output as the state s_t,
+            # Map times steps from source to time steps in trajectory.
             # with torch.no_grad():
             #     if t + 1 < end:
             #         source = sources[:, t + 1 : t + 1 + self.src_seq_length, :].clone()
@@ -455,7 +510,7 @@ class AdaptedDreamWAQ(GenericAgent):
             #         # for corresponding time step
             #         source[:, -1, -self.action_dim :] = 0
             #         enc_output = self.repr_model_target(source, enc_only=True)
-            #         state_transitions.next_prompts[:, t - start, :] = torch.flatten(
+            #         state_transitions.next_states[:, t - start, :] = torch.flatten(
             #             enc_output, start_dim=1, end_dim=2
             #         )
             #         # state_transitions.next_states[:, t - start, :] = enc_output[
@@ -464,7 +519,7 @@ class AdaptedDreamWAQ(GenericAgent):
         # ? Should padding be done on target to get state sequence for all observations?
         return state_transitions
 
-    def update_critic(self, state_transitions: ContextualStateTransitions):
+    def update_critic(self, state_transitions: ContextualStateTransitionsV2):
         """
         Updates the critic network using the given state transitions.
 
@@ -474,23 +529,32 @@ class AdaptedDreamWAQ(GenericAgent):
                 state_seq_len, ...).
         """
         # Initialize loss and current states
+        states = torch.cat(
+            [
+                state_transitions.pred_contexts,
+                state_transitions.observations,
+                # state_transitions.latents,
+            ],
+            dim=2,
+        )
+        next_states = torch.cat(
+            [
+                state_transitions.true_contexts,
+                state_transitions.next_observations,
+                # state_transitions.latents,
+            ],
+            dim=2,
+        )
 
         # Loop through each time step in the trajectory
         # Note: We don't have next_states for the last time step in each trajectory,
-        # so we loop until the (state_seq_length - 1)th time step.
-
-        # * Construct critic input
-        states = torch.cat([state_transitions.contexts, state_transitions.observations], dim=2) # [observation_t, context_t]
-        next_states = torch.cat([state_transitions.contexts, state_transitions.next_observations], dim=2) # [next_observation_t, next_context_t]
-
-        # TODO: Should input asymmetry be maintained?
-        actor_next_states = torch.cat([state_transitions.prompts, state_transitions.next_observations], dim=2) # [next_observation_t, next_prompt_t]
-        # ? Is it upto state_seq_length now?
-        for t in range(self.state_seq_length):
+        # so we loop until the (n_src_per_batch - 1)th time step.
+        # ? Should loop be replaced with reshape to perform all operations at once?
+        for t in range(self.state_seq_length - 1):
             with torch.no_grad():
                 # 2. Sample next action and compute Q-value targets
                 next_state_action, next_state_log_pi, _ = self.sample_action(
-                    actor_next_states[:, t, :]
+                    next_states[:, t, :]
                 )
                 qf1_next_target = self.qf1_target(
                     next_states[:, t, :], next_state_action
@@ -519,16 +583,15 @@ class AdaptedDreamWAQ(GenericAgent):
             qf2_loss = F.mse_loss(qf2_a_value, next_q_value)
             qf_loss = qf1_loss + qf2_loss
 
-            # TODO: Is it a better choice to propagate gradients between them?
-            # total_loss = qf_loss + state_transitions.loss
+            total_loss = qf_loss + state_transitions.loss
 
             # 5. Update critic model
-            # self.repr_optimizer.zero_grad()
+            self.repr_optimizer.zero_grad()
             self.q_optimizer.zero_grad()
-            qf_loss.backward()
-            # total_loss.backward()
+            # qf_loss.backward()
+            total_loss.backward()
             self.q_optimizer.step()
-            # self.repr_optimizer.step()
+            self.repr_optimizer.step()
 
         # Log Q-function loss information of last state in sequence every log_freq steps.
         if self.global_step % self.log_freq == 0 and self.writer:
@@ -544,7 +607,7 @@ class AdaptedDreamWAQ(GenericAgent):
                 "losses/qf_loss", qf_loss.item() / 2.0, self.global_step
             )
 
-    def update_actor(self, state_transitions: ContextualStateTransitions):
+    def update_actor(self, state_transitions: ContextualStateTransitionsV2):
         """
         Updates the actor network using the given state transitions.
 
@@ -560,12 +623,15 @@ class AdaptedDreamWAQ(GenericAgent):
 
         # 4. Store final element along sequence dimension of enc_output as the state s_t,
         t = torch.randint(high=self.state_seq_length, size=(1,)).item()
-        # state = state_transitions.prompts[:, t, :].detach()
-
-        # * Construct actor input
-        # TODO: Actor input dimension
-        state = torch.cat([state_transitions.prompts[:, t, :].detach(), state_transitions.observations[:, t, :]], dim=1) # [observation_t, prompt_t].T
-        critic_state = torch.cat([state_transitions.contexts[:, t, :].detach(), state_transitions.observations[:, t, :]], dim=1) # [observation_t, context_t].T
+        states = torch.cat(
+            [
+                state_transitions.pred_contexts,
+                state_transitions.observations,
+                # state_transitions.latents,
+            ],
+            dim=2,
+        )
+        state = states[:, t, :].detach()
 
         # START: Policy freq loop
         for _ in range(self.policy_frequency):
@@ -576,8 +642,8 @@ class AdaptedDreamWAQ(GenericAgent):
 
             # 5. Compute the Q-values of the sampled actions using both the
             # Q-functions (Q1 and Q2).
-            qf1_pi = self.qf1(critic_state, pi)
-            qf2_pi = self.qf2(critic_state, pi)
+            qf1_pi = self.qf1(state, pi)
+            qf2_pi = self.qf2(state, pi)
 
             # Take the minimum Q-value among the two Q-functions to improve
             # robustness.
@@ -674,6 +740,7 @@ class AdaptedDreamWAQ(GenericAgent):
         for env_no in range(self.n_envs):
             ep_len = samples.observations[env_no].shape[0]
 
+            # Add 1 as the curr_obs with recent past ones together makes src_seq_length
             start = ep_len - self.src_seq_length + 1
             start = start if start >= 0 else 0
 
@@ -700,14 +767,21 @@ class AdaptedDreamWAQ(GenericAgent):
         source = source.to(self.device).float()
 
         # Get state representations
-        # self.repr_model.eval()
+        self.repr_model.eval()
         with torch.no_grad():
-            enc_output, context_head_output = self.repr_model(source, enc_only=True)
+            enc_output, [
+                context_head_output,
+            ] = self.repr_model(source, enc_only=True)
 
-        prompt = torch.flatten(enc_output, start_dim=1, end_dim=2)
+        state = torch.cat(
+            [
+                context_head_output,
+                torch.as_tensor(curr_obs, device=self.device, dtype=torch.float32),
+                # torch.flatten(enc_output, start_dim=1, end_dim=2),
+            ],
+            dim=-1,
+        )
         # state = enc_output[:, -1, :]
-        assert curr_obs.ndim == 2, "Current observation has more that 2 dimension"
-        state = torch.cat([prompt, torch.Tensor(curr_obs).to(self.device)], dim=1)
         return state
 
     def train(
@@ -770,30 +844,36 @@ class AdaptedDreamWAQ(GenericAgent):
 
         # Reset the environment and get initial observation
         curr_obs, _ = self.envs.reset()
-        curr_obs, curr_context = self.preprocess_observation(curr_obs)
+        curr_obs, curr_context = self.unpack_observation(curr_obs)
 
         for _ in range(total_timesteps):
             # Sample actions
             with torch.no_grad():
+                # TODO: Revaluate get_current_state
                 states = self.get_current_state(curr_obs)
                 actions, _, _ = self.sample_action(states)
 
             actions = actions.cpu().numpy() if torch.is_tensor(actions) else actions
+
             # Execute actions in the environment
             next_obs, rewards, dones, infos = self.envs.step(actions)
-            next_obs, next_context = self.preprocess_observation(next_obs)
+            next_obs, next_context = self.unpack_observation(next_obs)
 
-            experience = (curr_obs, next_obs, actions, rewards, dones, infos, curr_context)
+            experience = (
+                curr_obs,
+                next_obs,
+                actions,
+                rewards,
+                dones,
+                infos,
+                curr_context,
+            )
 
             # Prepare experience for agent update
             experience = self.preprocess_experience(experience)
 
             # Update the agent
             self.update_agent(experience)
-            assert np.array_equal(
-                curr_context, next_context
-            ), "Non-stationary environment"
-
 
             # Update the current observation
             curr_obs = next_obs
@@ -852,8 +932,6 @@ class AdaptedDreamWAQ(GenericAgent):
 
         # Reset the environments to get an initial observation state
         obs, _ = self.envs.reset()
-        if self.envs.is_contextual_env:
-            curr_obs, context = curr_obs["obs"], curr_obs["context"]
 
         while min(episode_count) < n_episodes:
             # Sample actions from the trained policy
@@ -862,8 +940,6 @@ class AdaptedDreamWAQ(GenericAgent):
 
             # Execute the actions in the environments
             next_obs, rewards, dones, _ = self.envs.step(actions)
-            if self.envs.is_contextual_env:
-                next_obs, next_context = next_obs["obs"], next_obs["context"]
 
             # Update the episode rewards
             for i, (reward, done) in enumerate(zip(rewards, dones)):
@@ -887,7 +963,6 @@ class AdaptedDreamWAQ(GenericAgent):
 
             # Update the current observations
             obs = next_obs
-            context = next_context
 
         # Calculate and log the average returns over all test episodes for each environment
         for i, returns in enumerate(all_returns):
@@ -920,6 +995,6 @@ if __name__ == "__main__":
     seed = 42
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-    envs = gymnasium.make_env(env_id, seed)
+    envs = gymz.make_env(env_id, seed)
 
-    agent = AdaptedDreamWAQ()
+    agent = Adaptran()

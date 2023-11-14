@@ -5,10 +5,11 @@ from ..layers import (
     PositionWiseFeedForward,
     MultiHeadAttention,
     ContinuousEmbedding,
-    AttentionPooling
+    AttentionPooling,
 )
 import math
 from pydantic import BaseModel
+
 
 class EncoderBlock(nn.Module):
     def __init__(self, embed_dim, n_heads, expanse_dim, dropout) -> None:
@@ -111,9 +112,9 @@ class Transformer(nn.Module):
 
         # Initialize the additional heads
         if head_dims:
-            self.additional_heads = nn.ModuleList([
-                nn.Linear(embed_dim * src_seq_length, dim) for dim in head_dims
-            ])
+            self.additional_heads = nn.ModuleList(
+                [nn.Linear(embed_dim * src_seq_length, dim) for dim in head_dims]
+            )
 
         self.src_feat_dim = src_feat_dim
         self.tgt_feat_dim = tgt_feat_dim
@@ -140,7 +141,7 @@ class Transformer(nn.Module):
 
         # Intilialize encoder and decoder inputs
         dec_init = self.decoder_initializer(source, dec_init)
-        
+
         src_mask = self.create_src_mask(source)
         tgt_mask = self.create_tgt_mask(dec_init)
 
@@ -151,10 +152,14 @@ class Transformer(nn.Module):
         enc_output = src_embedded
         for enc_block in self.encoder_blocks:
             enc_output = enc_block(enc_output, src_mask)
-        
+
         if self.head_dims:
-            flattened_enc_output = torch.flatten(enc_output, start_dim=1, end_dim=2)
-            additional_outputs = [head(flattened_enc_output) for head in self.additional_heads]
+            flattened_enc_output = torch.flatten(
+                enc_output, start_dim=1, end_dim=2
+            )  # end_dim inclusive
+            additional_outputs = [
+                head(flattened_enc_output) for head in self.additional_heads
+            ]
 
         if enc_only:
             if self.head_dims:
@@ -173,11 +178,7 @@ class Transformer(nn.Module):
 
         if full_output:
             if self.head_dims:
-                return (
-                    dec_output,
-                    enc_output,
-                    additional_outputs
-                )
+                return (dec_output, enc_output, additional_outputs)
 
             return (
                 dec_output,
@@ -246,9 +247,7 @@ class Transformer(nn.Module):
             mean[:, :, -dec_init_feat_dim:] = dec_init
 
         if self.prefix_length:
-            mean = torch.cat(
-                [source[:, -self.prefix_length :, :], mean], dim=1
-            )
+            mean = torch.cat([source[:, -self.prefix_length :, :], mean], dim=1)
         return mean
 
     def model_twin(self):

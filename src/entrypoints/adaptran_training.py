@@ -25,7 +25,8 @@ from gymnasium.wrappers import (
 from shimmy.openai_gym_compatibility import _convert_space
 from torch.utils.tensorboard import SummaryWriter
 
-from ..agents import AdaptedDreamWAQ
+from ..agents import Adaptran
+from ..agents.adaptran import get_action_dim, get_observation_dim
 from ..assets import Transformer, VariationalTransformer
 from ..config import (
     BufferConfig,
@@ -41,7 +42,7 @@ from ..envs.wrappers.compatibility import (
     VecEnvProjectCompatibility,
 )
 from ..envs.wrappers.normalization import RMVNormalizeVecObservation
-from ..utils import get_action_dim, get_observation_dim, set_torch_seed
+from ..utils import set_torch_seed
 
 
 def load_pretrained_model(model: torch.nn.Module, path: str):
@@ -100,7 +101,13 @@ def setup_env(
             # )
         else:
             e = gymz.make(env_cls_name, render_mode=render_mode)
-
+        
+        # Seeding
+        e.reset(seed=seed)
+        if hasattr(e, "action_space"):
+            e.action_space.seed(seed)
+        if hasattr(e, "observation_space"):
+            e.observation_space.seed(seed)
         return EnvProjectCompatibility(e)
 
     def _update_action_space(e):
@@ -127,10 +134,11 @@ def main():
     config = ReinforcedLearnerConfig(
         env_id="CARLMountainCarContinuous",
         batch_size=512,
-        normalize_observation=False,
+        normalize_observation=True,
         agent=CoretranAgentConfig(
-            name="adreamwaq",
+            name="adaptran-test",
             repr_model=TransformerConfig(
+                embed_dim=8,
                 n_enc_blocks=2,
                 n_dec_blocks=1,
                 src_seq_length=5,
@@ -142,11 +150,11 @@ def main():
             ),
             log_freq=100,
             repr_model_optimizer=OptimizerConfig(lr=1e-4),
-            actor_optimizer=OptimizerConfig(lr=3e-4),
-            critic_optimizer=OptimizerConfig(lr=3e-4),
+            actor_optimizer=OptimizerConfig(lr=5e-4),
+            critic_optimizer=OptimizerConfig(lr=5e-4),
             kappa=0.001,
             state_seq_length=2,
-            target_network_frequency=1,
+            target_network_frequency=8,
             policy_frequency=32,
             tau=0.01,
             autotune=False,
@@ -180,16 +188,23 @@ def main():
     print("Conetxt Space: ", envs.single_observation_space["context"])
     print("Action Space: ", envs.single_observation_space)
 
-    observation_dim = get_observation_dim(envs)
+    obs_context_dim: dict = get_observation_dim(envs)
+    observation_dim, context_dim = (
+        obs_context_dim["obs"],
+        obs_context_dim["context"],
+    )
     action_dim = get_action_dim(envs)
-    print("Source feature dimension", observation_dim + action_dim)
+    print("Source feature dimension", (observation_dim + action_dim))
+    # config.agent.repr_model.head_dim = [context_dim]
 
     # Heuristic: Adapt embedding dimension to source dim
 
     # Embedding dim is ~75% of source_dim that is divisible by n_heads
-    quotient = (observation_dim + action_dim) * 0.75 // config.agent.repr_model.n_heads
-    config.agent.repr_model.embed_dim = int(config.agent.repr_model.n_heads * quotient) or (observation_dim + action_dim)
-    print("Embedding dimension", config.agent.repr_model.embed_dim)
+    # quotient = (observation_dim + action_dim) * 0.75 // config.agent.repr_model.n_heads
+    # config.agent.repr_model.embed_dim = int(
+    #     config.agent.repr_model.n_heads * quotient
+    # ) or (observation_dim + action_dim)
+    # print("Embedding dimension", config.agent.repr_model.embed_dim)
 
     config.agent.repr_model.head_dims = [
         np.prod(envs.single_observation_space["context"].shape).item()
@@ -229,7 +244,7 @@ def main():
     with open(config_path, "w") as config_file:
         config_file.write(config.model_dump_json(exclude={"device"}))
 
-    agent = AdaptedDreamWAQ(
+    agent = Adaptran(
         envs=envs,
         repr_model=model,
         repr_model_learning_rate=config.agent.repr_model_optimizer.lr,

@@ -10,3 +10,6 @@ argdantic
 d4rl
 jax
 cRL_HPO
+docs
+how-to-autorl
+type_hint_correction.py

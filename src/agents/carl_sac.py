@@ -26,7 +26,6 @@ class CARLSACAgent(GenericAgent):
         device: torch.device,
         writer: SummaryWriter | None = None,
         log_freq: int = 100,
-        seed: int = 1,
         expanse_dim: int = 256
     ):
         super().__init__(envs)
@@ -34,7 +33,6 @@ class CARLSACAgent(GenericAgent):
         self.critic_learning_rate = critic_learning_rate
         self.writer = writer
         self.log_freq = log_freq
-        self.seed = seed
 
         self.is_vector_env: bool = is_vector_env(envs)
         # assert self.is_vector_env, "Environment not vectorized"
