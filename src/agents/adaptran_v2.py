@@ -8,7 +8,6 @@ import gymnasium
 import numpy as np
 import torch
 import torch.nn.functional as F
-from stable_baselines3.common.buffers import ReplayBuffer, ReplayBufferSamples
 from torch import optim
 from torch.utils.tensorboard import SummaryWriter
 
@@ -18,6 +17,7 @@ from ..utils import get_action_dim, is_vector_env
 from .core import GenericAgent
 from ..data.buffer import EpisodicBuffer, EpisodicBufferSamples
 from .adaptran import get_observation_dim
+
 
 class AdaptranV2(GenericAgent):
     def __init__(
@@ -38,7 +38,7 @@ class AdaptranV2(GenericAgent):
         self.writer = writer
         self.log_freq = log_freq
         self.seed = seed
-        
+
         self.is_vector_env: bool = is_vector_env(envs)
         assert self.is_vector_env, "Environment not vectorized"
 
@@ -180,7 +180,6 @@ class AdaptranV2(GenericAgent):
             actions = np.array(
                 [self.single_action_space.sample() for _ in range(self.n_envs)]
             )
-            # actions = self.envs.unwrapped.action_space.sample()
             return actions, log_probs, squashed_means
 
         # Convert observations to Tensor if they're not already
@@ -192,7 +191,9 @@ class AdaptranV2(GenericAgent):
         actions, log_probs, squashed_means = self.actor.get_action(observations)
         return actions, log_probs, squashed_means
 
-    def preprocess_experience(self, obs, next_obs, actions, rewards, dones, infos, context):
+    def preprocess_experience(
+        self, obs, next_obs, actions, rewards, dones, infos, context
+    ):
         """Preprocess experience if needed (e.g., stacking frames, normalizing)."""
 
         # TRY NOT TO MODIFY: save data to reply buffer; handle `terminal_observation`
@@ -200,7 +201,6 @@ class AdaptranV2(GenericAgent):
         # at the end of an episode and real terminal observation is in infos.
         # For more info: https://stable-baselines3.readthedocs.io/en/master/guide/vec_envs.html
         real_next_obs = next_obs.copy()
-        # next_obs = self.preprocess_observation(real_next_obs)
 
         for idx, done in enumerate(dones):
             if done:  # if the sub-environment has terminated
@@ -240,7 +240,9 @@ class AdaptranV2(GenericAgent):
             return
 
         # Sample batch of transitions from replay buffer
-        batch: EpisodicBufferSamples = self.replay_buffer.sample(self.batch_size, desired_length=1)
+        batch: EpisodicBufferSamples = self.replay_buffer.sample(
+            self.batch_size, desired_length=1
+        )
 
         if batch.observations.shape[1] == 1:
             batch.observations = batch.observations.squeeze(1)
@@ -275,29 +277,19 @@ class AdaptranV2(GenericAgent):
             None: The method updates the critic network in-place.
         """
 
-        states: torch.Tensor = torch.cat([
-            batch.observations,
-            batch.contexts
-        ], dim=-1)
+        states: torch.Tensor = torch.cat([batch.observations, batch.contexts], dim=-1)
 
-        next_states: torch.Tensor = torch.cat([
-            batch.next_observations,
-            batch.contexts
-        ], dim=-1)
+        next_states: torch.Tensor = torch.cat(
+            [batch.next_observations, batch.contexts], dim=-1
+        )
 
         # states, next_states = states.squeeze(1), next_states.squeeze(1)
 
         with torch.no_grad():
             # 1. Sample next action and compute Q-value targets
-            next_state_actions, next_state_log_pi, _ = self.sample_action(
-                next_states
-            )
-            qf1_next_target = self.qf1_target(
-                next_states, next_state_actions
-            )
-            qf2_next_target = self.qf2_target(
-                next_states, next_state_actions
-            )
+            next_state_actions, next_state_log_pi, _ = self.sample_action(next_states)
+            qf1_next_target = self.qf1_target(next_states, next_state_actions)
+            qf2_next_target = self.qf2_target(next_states, next_state_actions)
 
             # 2. Compute the minimum Q-value target and the target for the Q-function
             # update
@@ -350,11 +342,8 @@ class AdaptranV2(GenericAgent):
         # The loop here runs multiple updates for each actor update,
         # which is specified by self.policy_frequency.
 
-        states: torch.Tensor = torch.cat([
-            batch.observations,
-            batch.contexts
-        ], dim=-1)
-        
+        states: torch.Tensor = torch.cat([batch.observations, batch.contexts], dim=-1)
+
         for _ in range(self.policy_frequency):
             # 1. Sample Actions:
             # Using the current policy, sample actions and their log
@@ -373,7 +362,7 @@ class AdaptranV2(GenericAgent):
             # 3. Compute Actor Loss:
             # The actor aims to maximize this quantity, which corresponds
             # to maximizing Q-value and entropy.
-            actor_loss = (self.alpha * log_pi - min_qf_pi).mean()
+            actor_loss = ((self.alpha * log_pi) - min_qf_pi).mean()
 
             # 4. Perform backpropagation to update the actor network.
             self.actor_optimizer.zero_grad()
@@ -480,7 +469,9 @@ class AdaptranV2(GenericAgent):
                 state = np.concatenate([curr_obs, curr_context], axis=-1)
                 actions, _, _ = self.sample_action(state)  # (n_envs, action_dim)
 
-            actions = actions.detach().cpu().numpy() if torch.is_tensor(actions) else actions
+            actions = (
+                actions.detach().cpu().numpy() if torch.is_tensor(actions) else actions
+            )
 
             # Execute actions in the
             next_obs, rewards, dones, infos = self.envs.step(actions)
