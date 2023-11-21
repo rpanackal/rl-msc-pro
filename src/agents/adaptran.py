@@ -1,5 +1,7 @@
 import time
+from typing import Union
 
+import gym
 import gymnasium as gymz
 import numpy as np
 import torch
@@ -11,10 +13,9 @@ from torch.utils.tensorboard import SummaryWriter
 from ..assets import Transformer
 from ..assets.models import Actor, SoftQNetwork
 from ..data.buffer import EpisodicBuffer, EpisodicBufferSamples
-from .core import GenericAgent, CompactStateTransitions, ContextualStateTransitionsV2
 from ..utils import is_vector_env
-import gym
-from typing import Union
+from .core import CompactStateTransitions, ContextualStateTransitionsV2, GenericAgent
+
 
 def get_space_dim(space):
     """
@@ -93,6 +94,7 @@ class Adaptran(GenericAgent):
         writer: Union[SummaryWriter, None] = None,
         log_freq: int = 100,
         expanse_dim: int = 256,
+        seed: int = 1,
     ):
         super().__init__(envs)
         self.device = device
@@ -100,38 +102,25 @@ class Adaptran(GenericAgent):
         self.writer = writer
         self.log_freq = log_freq
         self.state_seq_length = 2  # min sequence length of state to actor and critic
+        self.seed = seed
 
         self.is_vector_env: bool = is_vector_env(envs)
         assert self.is_vector_env, "Environment not vectorized"
 
-        if self.is_vector_env:
-            self.single_observation_space = self.envs.single_observation_space
-            self.single_action_space = self.envs.single_action_space
-            self.n_envs = self.envs.num_envs
-        else:
-            self.single_observation_space = self.envs.observation_space
-            self.single_action_space = self.envs.action_space
+        self.single_observation_space = self.envs.single_observation_space
+        self.single_action_space = self.envs.single_action_space
+        self.n_envs = self.envs.num_envs
+
         assert isinstance(envs.single_action_space, gymz.spaces.Box), ValueError(
             f"only continuous action space is supported, given {envs.single_action_space}"
         )
+
         self.is_contextual_env: bool = getattr(self.envs, "is_contextual_env", False)
         assert self.is_contextual_env, ValueError(
             f"Agent expects contextual environments to work correctly."
         )
-
-        if self.is_contextual_env:
-            self.single_observation_space["obs"].dtype = np.float32
-            self.single_observation_space["context"].dtype = np.float32
-        else:
-            self.single_observation_space.dtype = np.float32
-
-        obs_context_dim: dict = get_observation_dim(self.envs)
-        self.observation_dim, self.context_dim = (
-            obs_context_dim["obs"],
-            obs_context_dim["context"],
-        )
-
-        self.action_dim = get_action_dim(self.envs)
+        self.single_observation_space["obs"].dtype = np.float32
+        self.single_observation_space["context"].dtype = np.float32
 
         self.repr_model = repr_model.float()
         # self.repr_model_target = repr_model.model_twin().to(device)
@@ -141,18 +130,24 @@ class Adaptran(GenericAgent):
         self.src_seq_length = self.repr_model.src_seq_length
         self.tgt_seq_length = self.repr_model.tgt_seq_length
         self.embed_dim = self.repr_model.embed_dim
+        obs_context_dim: dict = get_observation_dim(self.envs)
+        self.observation_dim, self.context_dim = (
+            obs_context_dim["obs"],
+            obs_context_dim["context"],
+        )
+        self.action_dim = get_action_dim(self.envs)
 
         self.latent_dim = self.embed_dim * self.src_seq_length
         #! You left here
         # * The latent removed from state
-        total_flat_ip = self.context_dim + self.observation_dim # + self.latent_dim 
+        self.state_dim = self.context_dim + self.observation_dim  # + self.latent_dim
 
         # TODO: Change input dimension as per the logic
-        self.actor = Actor(envs, total_flat_ip, expanse_dim).to(device)
-        self.qf1 = SoftQNetwork(envs, total_flat_ip, expanse_dim).to(device)
-        self.qf2 = SoftQNetwork(envs, total_flat_ip, expanse_dim).to(device)
-        self.qf1_target = SoftQNetwork(envs, total_flat_ip, expanse_dim).to(device)
-        self.qf2_target = SoftQNetwork(envs, total_flat_ip, expanse_dim).to(device)
+        self.actor = Actor(envs, self.state_dim, expanse_dim).to(device)
+        self.qf1 = SoftQNetwork(envs, self.state_dim, expanse_dim).to(device)
+        self.qf2 = SoftQNetwork(envs, self.state_dim, expanse_dim).to(device)
+        self.qf1_target = SoftQNetwork(envs, self.state_dim, expanse_dim).to(device)
+        self.qf2_target = SoftQNetwork(envs, self.state_dim, expanse_dim).to(device)
         self.qf1_target.load_state_dict(self.qf1.state_dict())
         self.qf2_target.load_state_dict(self.qf2.state_dict())
 
@@ -228,7 +223,7 @@ class Adaptran(GenericAgent):
         # If automatic tuning of alpha is enabled, set up the corresponding variables and optimizers
         if autotune:
             self.target_entropy = -torch.prod(
-                torch.Tensor(self.envs.single_action_space.shape).to(self.device)
+                torch.Tensor(self.single_action_space.shape).to(self.device)
             ).item()
             self.log_alpha = torch.zeros(1, requires_grad=True, device=self.device)
             self.alpha = self.log_alpha.exp().item()
@@ -280,6 +275,7 @@ class Adaptran(GenericAgent):
             learning_starts.
         """
         actions = log_probs = squashed_means = None
+
         # Check if the agent should start learning
         if self.global_step < self.learning_starts:
             # Randomly sample actions if learning has not started
@@ -292,7 +288,6 @@ class Adaptran(GenericAgent):
         states = torch.as_tensor(states, device=self.device, dtype=torch.float32)
 
         # Use the actor model to sample actions, log_probs, and squashed_means
-        # TODO: state to be composed of temporal observations, latent and context features.
         actions, log_probs, squashed_means = self.actor.get_action(states)
         return actions, log_probs, squashed_means
 
@@ -313,10 +308,7 @@ class Adaptran(GenericAgent):
             if done:  # if the sub-environment has terminated
                 if self.is_contextual_env:
                     real_next_obs[idx] = infos["final_observation"][idx]["obs"]
-                else:
-                    real_next_obs[idx] = infos["final_observation"][idx]
 
-        # ! Omitted logic for non-vec envs, as vec env will be the standard here on!
         # Add any preprocessing code here
         return obs, real_next_obs, actions, rewards, dones, infos, context
 
@@ -437,16 +429,28 @@ class Adaptran(GenericAgent):
         )
         end = start + self.state_seq_length
 
-        state_transitions = ContextualStateTransitionsV2(
-            latents=torch.empty(
-                (self.batch_size, self.state_seq_length, self.latent_dim)
+        # state_transitions = ContextualStateTransitionsV2(
+        #     latents=torch.empty(
+        #         (self.batch_size, self.state_seq_length, self.latent_dim)
+        #     ).to(self.device),
+        #     pred_contexts=torch.empty(
+        #         (self.batch_size, self.state_seq_length, self.context_dim)
+        #     ).to(self.device),
+        #     true_contexts=samples.contexts[:, start:end],
+        #     observations=samples.observations[:, start:end],
+        #     next_observations=samples.next_observations[:, start:end],
+        #     actions=samples.actions[:, start:end, :],
+        #     rewards=samples.rewards[:, start:end],
+        #     dones=samples.dones[:, start:end],
+        #     loss=torch.zeros(1).to(self.device),
+        # )
+        state_transitions = CompactStateTransitions(
+            states=torch.empty(
+                (self.batch_size, self.state_seq_length, self.state_dim)
             ).to(self.device),
-            pred_contexts=torch.empty(
-                (self.batch_size, self.state_seq_length, self.context_dim)
+            next_states=torch.empty(
+                (self.batch_size, self.state_seq_length - 1, self.state_dim)
             ).to(self.device),
-            true_contexts=samples.contexts[:, start:end],
-            observations=samples.observations[:, start:end],
-            next_observations=samples.next_observations[:, start:end],
             actions=samples.actions[:, start:end, :],
             rewards=samples.rewards[:, start:end],
             dones=samples.dones[:, start:end],
@@ -494,28 +498,48 @@ class Adaptran(GenericAgent):
                     "losses/context_loss", context_loss.item(), self.global_step
                 )
 
-            state_transitions.pred_contexts[:, t - start, :] = context_head_output
-            state_transitions.latents[:, t - start, :] = torch.flatten(
-                enc_output, start_dim=1, end_dim=2
+            # ! No gradient propagation from critic
+            # with torch.no_grad():
+            #     state_transitions.pred_contexts[:, t - start, :] = context_head_output
+            #     state_transitions.latents[:, t - start, :] = torch.flatten(
+            #         enc_output, start_dim=1, end_dim=2
+            #     )
+            state_transitions.states[:, t - start, :] = torch.cat(
+                [
+                    context_head_output,
+                    samples.observations[:, t, :],
+                    # state_transitions.latents,
+                ],
+                dim=-1,
             )
             state_transitions.loss += total_loss
 
             # * No need of target context representations, as critic has access to true context
             # 4. Store final element along sequence dimension of enc_output as the state s_t,
             # Map times steps from source to time steps in trajectory.
-            # with torch.no_grad():
-            #     if t + 1 < end:
-            #         source = sources[:, t + 1 : t + 1 + self.src_seq_length, :].clone()
-            #         # During online interaction, actions are sampled and not available for state calculation
-            #         # for corresponding time step
-            #         source[:, -1, -self.action_dim :] = 0
-            #         enc_output = self.repr_model_target(source, enc_only=True)
-            #         state_transitions.next_states[:, t - start, :] = torch.flatten(
-            #             enc_output, start_dim=1, end_dim=2
-            #         )
-            #         # state_transitions.next_states[:, t - start, :] = enc_output[
-            #         #     :, -1, :
-            #         # ]
+            with torch.no_grad():
+                if t + 1 < end:
+                    # source = sources[:, t + 1 : t + 1 + self.src_seq_length, :].clone()
+                    # # During online interaction, actions are sampled and not available for state calculation
+                    # # for corresponding time step
+                    # source[:, -1, -self.action_dim :] = 0
+                    # enc_output, [
+                    #     context_head_output,
+                    # ] = self.repr_model_target(source, enc_only=True)
+                    # # state_transitions.next_states[:, t - start, :] = torch.flatten(
+                    # #     enc_output, start_dim=1, end_dim=2
+                    # # )
+                    # # state_transitions.next_states[:, t - start, :] = enc_output[
+                    # #     :, -1, :
+                    # # ]
+                    state_transitions.next_states[:, t - start, :] = torch.cat(
+                        [
+                            context_head_output,
+                            samples.observations[:, t + 1, :],
+                            # state_transitions.latents,
+                        ],
+                        dim=-1,
+                    )
         # ? Should padding be done on target to get state sequence for all observations?
         return state_transitions
 
@@ -529,22 +553,22 @@ class Adaptran(GenericAgent):
                 state_seq_len, ...).
         """
         # Initialize loss and current states
-        states = torch.cat(
-            [
-                state_transitions.pred_contexts,
-                state_transitions.observations,
-                # state_transitions.latents,
-            ],
-            dim=2,
-        )
-        next_states = torch.cat(
-            [
-                state_transitions.true_contexts,
-                state_transitions.next_observations,
-                # state_transitions.latents,
-            ],
-            dim=2,
-        )
+        # states = torch.cat(
+        #     [
+        #         state_transitions.true_contexts,
+        #         state_transitions.observations,
+        #         # state_transitions.latents,
+        #     ],
+        #     dim=2,
+        # )
+        # next_states = torch.cat(
+        #     [
+        #         state_transitions.true_contexts,
+        #         state_transitions.next_observations,
+        #         # state_transitions.latents,
+        #     ],
+        #     dim=2,
+        # )
 
         # Loop through each time step in the trajectory
         # Note: We don't have next_states for the last time step in each trajectory,
@@ -554,13 +578,13 @@ class Adaptran(GenericAgent):
             with torch.no_grad():
                 # 2. Sample next action and compute Q-value targets
                 next_state_action, next_state_log_pi, _ = self.sample_action(
-                    next_states[:, t, :]
+                    state_transitions.next_states[:, t, :]
                 )
                 qf1_next_target = self.qf1_target(
-                    next_states[:, t, :], next_state_action
+                    state_transitions.next_states[:, t, :], next_state_action
                 )
                 qf2_next_target = self.qf2_target(
-                    next_states[:, t, :], next_state_action
+                    state_transitions.next_states[:, t, :], next_state_action
                 )
 
                 # 3. Compute the minimum Q-value target and the target for the Q-function update
@@ -574,16 +598,16 @@ class Adaptran(GenericAgent):
 
             # 4. Compute the Q-values and the MSE loss for both critics
             qf1_a_value = self.qf1(
-                states[:, t, :], state_transitions.actions[:, t, :]
+                state_transitions.states[:, t, :], state_transitions.actions[:, t, :]
             ).view(-1)
             qf2_a_value = self.qf2(
-                states[:, t, :], state_transitions.actions[:, t, :]
+                state_transitions.states[:, t, :], state_transitions.actions[:, t, :]
             ).view(-1)
             qf1_loss = F.mse_loss(qf1_a_value, next_q_value)
             qf2_loss = F.mse_loss(qf2_a_value, next_q_value)
             qf_loss = qf1_loss + qf2_loss
 
-            total_loss = qf_loss + state_transitions.loss
+            total_loss = qf_loss  + state_transitions.loss
 
             # 5. Update critic model
             self.repr_optimizer.zero_grad()
@@ -623,15 +647,16 @@ class Adaptran(GenericAgent):
 
         # 4. Store final element along sequence dimension of enc_output as the state s_t,
         t = torch.randint(high=self.state_seq_length, size=(1,)).item()
-        states = torch.cat(
-            [
-                state_transitions.pred_contexts,
-                state_transitions.observations,
-                # state_transitions.latents,
-            ],
-            dim=2,
-        )
-        state = states[:, t, :].detach()
+        # states = torch.cat(
+        #     [
+        #         state_transitions.pred_contexts,
+        #         state_transitions.observations,
+        #         # state_transitions.latents,
+        #     ],
+        #     dim=2,
+        # )
+        # state = states[:, t, :]
+        state = state_transitions.states[:, t, :].detach()
 
         # START: Policy freq loop
         for _ in range(self.policy_frequency):
@@ -652,7 +677,7 @@ class Adaptran(GenericAgent):
             # 6. Compute Actor Loss:
             # The actor aims to maximize this quantity, which corresponds
             # to maximizing Q-value and entropy.
-            actor_loss = (self.alpha * log_pi - min_qf_pi).mean()
+            actor_loss = ((self.alpha * log_pi) - min_qf_pi).mean()
 
             # 7. Perform backpropagation to update the actor network.
             # self.repr_optimizer.zero_grad()
@@ -719,7 +744,7 @@ class Adaptran(GenericAgent):
         #         self.tau * param.data + (1 - self.tau) * target_param.data
         #     )
 
-    def get_current_state(self, curr_obs: np.ndarray):
+    def get_current_state(self, curr_obs: np.ndarray, curr_context: np.ndarray):
         # If learning hasn't started, current states are unnecessary
         # as actions are randomly sampled.
         if self.global_step < self.learning_starts:
@@ -767,7 +792,7 @@ class Adaptran(GenericAgent):
         source = source.to(self.device).float()
 
         # Get state representations
-        self.repr_model.eval()
+        # self.repr_model.eval()
         with torch.no_grad():
             enc_output, [
                 context_head_output,
@@ -775,7 +800,8 @@ class Adaptran(GenericAgent):
 
         state = torch.cat(
             [
-                context_head_output,
+                context_head_output.detach(),
+                # torch.as_tensor(curr_context, device=self.device, dtype=torch.float32),
                 torch.as_tensor(curr_obs, device=self.device, dtype=torch.float32),
                 # torch.flatten(enc_output, start_dim=1, end_dim=2),
             ],
@@ -843,17 +869,19 @@ class Adaptran(GenericAgent):
         start_time = time.time()
 
         # Reset the environment and get initial observation
-        curr_obs, _ = self.envs.reset()
+        curr_obs, _ = self.envs.reset(seed=self.seed)
         curr_obs, curr_context = self.unpack_observation(curr_obs)
 
         for _ in range(total_timesteps):
             # Sample actions
             with torch.no_grad():
                 # TODO: Revaluate get_current_state
-                states = self.get_current_state(curr_obs)
+                states = self.get_current_state(curr_obs, curr_context)
                 actions, _, _ = self.sample_action(states)
 
-            actions = actions.cpu().numpy() if torch.is_tensor(actions) else actions
+            actions = (
+                actions.detach().cpu().numpy() if torch.is_tensor(actions) else actions
+            )
 
             # Execute actions in the environment
             next_obs, rewards, dones, infos = self.envs.step(actions)
