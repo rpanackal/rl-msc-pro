@@ -4,21 +4,25 @@ import gymnasium as gymz
 import numpy as np
 import torch as th
 from gymnasium import spaces
-from stable_baselines3.common.buffers import BaseBuffer
+from stable_baselines3.common.buffers import BaseBuffer, RolloutBuffer
 from ..envs.wrappers.normalization import RMVNormalizeVecObservation
 from src.utils import get_observation_dim
+from pydantic import BaseModel
+from pathlib import PurePath
 
 
-class EpisodicBufferSamples(NamedTuple):
+class EpisodicReplayBufferSamples(BaseModel):
     observations: Union[th.Tensor, list[np.ndarray]]
-    next_observations: Union[th.Tensor, list[np.ndarray]] | None
+    next_observations: Union[th.Tensor, list[np.ndarray], None]
     actions: Union[th.Tensor, list[np.ndarray]]
     rewards: Union[th.Tensor, list[np.ndarray]]
     dones: Union[th.Tensor, list[np.ndarray]]
-    contexts: Union[th.Tensor, list[np.ndarray]] | None
+    contexts: Union[th.Tensor, list[np.ndarray], None]
+
+    model_config = {"arbitrary_types_allowed": True}
 
 
-class EpisodicBuffer(BaseBuffer):
+class EpisodicReplayBuffer(BaseBuffer):
     """
     EpisodicBuffer is used to append experience at each time step
     and sample random batch of episodes from it.
@@ -47,7 +51,7 @@ class EpisodicBuffer(BaseBuffer):
         optimize_memory_usage: bool = False,
         include_context: bool = False,
     ):
-        super(EpisodicBuffer, self).__init__(
+        super(EpisodicReplayBuffer, self).__init__(
             buffer_size, observation_space, action_space, device, n_envs=n_envs
         )
 
@@ -56,10 +60,12 @@ class EpisodicBuffer(BaseBuffer):
 
         self.optimize_memory_usage = optimize_memory_usage
         self.include_context = include_context
-        self.overflow = False
 
         # To handle carl environment observation space
-        if isinstance(self.observation_space, spaces.Dict) and "obs" in self.observation_space.keys():
+        if (
+            isinstance(self.observation_space, spaces.Dict)
+            and "obs" in self.observation_space.keys()
+        ):
             self.obs_shape = self.observation_space["obs"].shape
 
         if self.include_context:
@@ -86,7 +92,7 @@ class EpisodicBuffer(BaseBuffer):
                 (self.buffer_size, self.n_envs, self.context_dim), dtype=np.float32
             )
 
-        super(EpisodicBuffer, self).reset()
+        super(EpisodicReplayBuffer, self).reset()
 
     def add(
         self,
@@ -132,7 +138,7 @@ class EpisodicBuffer(BaseBuffer):
         self.pos += 1
 
         if self.pos == self.buffer_size:
-            self.full = True
+            self.full = True  # Indicates buffer is overflowing
             self.pos = 0
 
     def sample(
@@ -140,7 +146,7 @@ class EpisodicBuffer(BaseBuffer):
         batch_size: int,
         desired_length: Union[int, None] = None,
         env: Union[RMVNormalizeVecObservation, gymz.Env, None] = None,
-    ) -> EpisodicBufferSamples:
+    ) -> EpisodicReplayBufferSamples:
         """
         Samples a random batch of episodes from the episodic buffer.
 
@@ -213,7 +219,7 @@ class EpisodicBuffer(BaseBuffer):
         batch_size: int,
         desired_length: Union[int, None] = None,
         env: Union[RMVNormalizeVecObservation, None] = None,
-    ) -> EpisodicBufferSamples:
+    ) -> EpisodicReplayBufferSamples:
         """
         Internal method to retrieve samples based on given episode start and end indices.
 
@@ -228,20 +234,31 @@ class EpisodicBuffer(BaseBuffer):
             (EpisodicBufferSamples): An EpisodicBufferSamples object containing the sampled episodes.
         """
         # Step 4: Get flattened view of episodes.
-        observations = self.swap_and_flatten(self.observations)
-        actions = self.swap_and_flatten(self.actions)
-        rewards = self.swap_and_flatten(self.rewards)
-        dones = self.swap_and_flatten(self.dones)
+        observations = self.observations if self.full else self.observations[: self.pos]
+        actions = self.actions if self.full else self.actions[: self.pos]
+        rewards = self.rewards if self.full else self.rewards[: self.pos]
+        dones = self.dones if self.full else self.dones[: self.pos]
+
+        observations = self.swap_and_flatten(observations)
+        actions = self.swap_and_flatten(actions)
+        rewards = self.swap_and_flatten(rewards)
+        dones = self.swap_and_flatten(dones)
 
         # Allow start sampling anywhere in the episode to get desired_length trajectory if given.
         sampled_obs, sampled_actions, sampled_rewards, sampled_dones = [], [], [], []
 
         if not self.optimize_memory_usage:
-            next_observations = self.swap_and_flatten(self.next_observations)
+            next_observations = (
+                self.next_observations
+                if self.full
+                else self.next_observations[: self.pos]
+            )
+            next_observations = self.swap_and_flatten(next_observations)
             sampled_next_obs = []
 
         if self.include_context:
-            contexts = self.swap_and_flatten(self.contexts)
+            contexts = self.contexts if self.full else self.contexts[: self.pos]
+            contexts = self.swap_and_flatten(contexts)
             sampled_contexts = []
 
         # Initialize a counter for starts and ends
@@ -301,7 +318,7 @@ class EpisodicBuffer(BaseBuffer):
             if self.include_context:
                 sampled_contexts = self.to_torch(np.array(sampled_contexts))
 
-        return EpisodicBufferSamples(
+        return EpisodicReplayBufferSamples(
             observations=sampled_obs,
             next_observations=sampled_next_obs
             if not self.optimize_memory_usage
@@ -363,7 +380,7 @@ class EpisodicBuffer(BaseBuffer):
             if self.include_context:
                 contexts.append(self.contexts[start_last_ep : self.pos, env_no])
 
-        return EpisodicBufferSamples(
+        return EpisodicReplayBufferSamples(
             observations=observations,
             next_observations=next_observations
             if not self.optimize_memory_usage
@@ -397,3 +414,82 @@ class EpisodicBuffer(BaseBuffer):
         ):
             return env.normalize_observations(obs)
         return obs
+
+    def save(self, path: PurePath):
+        """Save buffer to disk in .npz format
+
+        Args:
+            path (PurePath): Path to save buffer at.
+        """
+        path = path if isinstance(path, PurePath) else PurePath(path)
+
+        observations = self.observations if self.full else self.observations[: self.pos]
+        actions = self.actions if self.full else self.actions[: self.pos]
+        rewards = self.rewards if self.full else self.rewards[: self.pos]
+        dones = self.dones if self.full else self.dones[: self.pos]
+
+        # Some measures to make sure flattening does mix episodes across environments
+        # Assume last filled position is also the end
+        dones[self.pos - 1, :] = 1
+        # Assume last transition in buffer is done, if full.
+        if self.full:
+            dones[-1, :] = 1
+
+        observations = self.swap_and_flatten(observations)
+        actions = self.swap_and_flatten(actions)
+        rewards = self.swap_and_flatten(rewards)
+        dones = self.swap_and_flatten(dones)
+
+        buffer = {
+            "observations": observations,
+            "rewards": rewards,
+            "actions": actions,
+            "dones": dones,
+        }
+
+        if not self.optimize_memory_usage:
+            next_observations = self.next_observations if self.full else self.next_observations[: self.pos]
+            buffer["next_observations"] = self.swap_and_flatten(next_observations)
+
+        if self.include_context:
+            contexts = self.contexts if self.full else self.contexts[: self.pos]
+            buffer["contexts"] = self.swap_and_flatten(contexts)
+
+        np.savez((path / "buffer.npz"), **buffer)
+
+    def load(self, path: PurePath):
+        preloaded_buffer = np.load(path)
+
+        # ! Currently loading from the prev save method that didnt swap and flatten buffer items
+        observations = preloaded_buffer["observations"]
+        rewards = preloaded_buffer["rewards"]
+        actions = preloaded_buffer["actions"]
+        dones = preloaded_buffer["dones"]
+
+        self.observations = observations
+        self.rewards = rewards
+        self.actions = actions
+        self.dones = dones
+
+        if not self.optimize_memory_usage:
+            self.next_observations = preloaded_buffer["next_observations"]
+
+        if self.include_context:
+            self.contexts = preloaded_buffer["contexts"]
+
+        # Enable sampling from the who buffer after loading
+        self.full = True
+
+    @staticmethod
+    def reverse_swap_and_flatten(arr: np.ndarray, n_envs=1) -> np.ndarray:
+        """
+        Reverse the operation of swap_and_flatten.
+        Reshape and then swap axes 1 (n_envs) and 0 (buffer_size)
+        to convert shape from [n_steps * n_envs, ...] back to [n_steps, n_envs, ...]
+
+        :param arr: Flattened array
+        :param original_shape: The original shape of the array before swap_and_flatten
+        :return: Reshaped array
+        """
+        reshaped_arr = arr.reshape(n_envs, -1, *arr.shape[1:])
+        return reshaped_arr.swapaxes(0, 1)

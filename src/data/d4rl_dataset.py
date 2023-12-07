@@ -1,14 +1,16 @@
 # from torchvision import datasets
 # from torchvision.transforms import ToTensor
 import math
-import numpy as np
-from d4rl.offline_env import OfflineEnv
+from typing import Union
+
 import numpy as np
 import torch
 from torch.utils.data import Dataset
 
+from d4rl.offline_env import OfflineEnv
+
 from ..utils import sequence_d4rl_dataset
-from typing import Union
+
 
 class D4RLSequenceDataset(Dataset):
     feature_keys = ("observations", "actions", "rewards")
@@ -24,7 +26,7 @@ class D4RLSequenceDataset(Dataset):
         src_features_keys: Union[list, None] = None,
         tgt_features_keys: Union[list, None] = None,
         do_normalize: bool = True,
-        epsilon: float = 1e-8
+        epsilon: float = 1e-8,
     ):
         """
         Initialize a dataset for D4RL environments with sequence data.
@@ -40,7 +42,7 @@ class D4RLSequenceDataset(Dataset):
                 Defaults to None.
             target_transform (_type_, optional): Transforms to be applied to source sequence.
                 Defaults to None.
-            split_length (_type_, optional): If specified splits a sequence to create new 
+            split_length (_type_, optional): If specified splits a sequence to create new
                 sequences of length split_length. Defaults to None.
             src_features_keys (Union[tuple, None], optional): Features of source sequence. Defaults to None.
             tgt_features_keys (Union[tuple, None], optional): Features of target sequence. Defaults to None.
@@ -54,19 +56,23 @@ class D4RLSequenceDataset(Dataset):
         self.observation_dim = np.prod(self.env.observation_space.shape)
         self.action_dim = np.prod(self.env.action_space.shape)
         env.observation_space.shape[0]
-        
+
         self.split_length = split_length
         self.source_ratio = source_ratio
         self.transform = transform
         self.source_transform = source_transform
         self.target_transform = target_transform
 
-        self.src_features_keys = src_features_keys if src_features_keys else D4RLSequenceDataset.feature_keys
+        self.src_features_keys = (
+            src_features_keys if src_features_keys else D4RLSequenceDataset.feature_keys
+        )
         for key in src_features_keys:
             if key not in D4RLSequenceDataset.feature_keys:
                 raise ValueError(f"Unrecognized source feature keys given -{key}.")
 
-        self.tgt_features_keys = tgt_features_keys if tgt_features_keys else D4RLSequenceDataset.feature_keys
+        self.tgt_features_keys = (
+            tgt_features_keys if tgt_features_keys else D4RLSequenceDataset.feature_keys
+        )
         for key in tgt_features_keys:
             if key not in D4RLSequenceDataset.feature_keys:
                 raise ValueError(f"Unrecognized target feature ({key}) keys given.")
@@ -89,8 +95,8 @@ class D4RLSequenceDataset(Dataset):
                 The extras is a contains features that were excluded from target sequence.
         """
         episode = self._dataset[idx]
-        
-        # self._dataset is list of ndarrays if self.is_variable_length is True, 
+
+        # self._dataset is list of ndarrays if self.is_variable_length is True,
         # otherwise self._dataset is a torch.Tensor
         if not isinstance(episode, torch.Tensor):
             episode = torch.Tensor(episode)
@@ -122,7 +128,7 @@ class D4RLSequenceDataset(Dataset):
 
         Returns:
             Union[list, torch.Tensor]: If sequences are same length then return a Tensor object, else a list.
-                shape: (dataset_size, seq_len, feat_dim) 
+                shape: (dataset_size, seq_len, feat_dim)
         """
         dataset = []
 
@@ -132,7 +138,6 @@ class D4RLSequenceDataset(Dataset):
 
         # Loop through each episode in d4rl dataset
         for episode in sequence_d4rl_dataset(self.env):
-
             # Calculate length of current episode
             episode_length = len(episode["rewards"])
 
@@ -184,17 +189,16 @@ class D4RLSequenceDataset(Dataset):
                 discarded features.
         """
         extras = {}
-        
+
         split = list(x.split([self.observation_dim, self.action_dim, 1], -1))
 
         for idx in reversed(range(len(split))):
             feature = D4RLSequenceDataset.feature_keys[idx]
-            if  feature not in features:
+            if feature not in features:
                 extras[feature] = split.pop(idx)
 
         x = torch.cat(split, dim=-1)
         return x, extras
-
 
     def __getattr__(self, name):
         # Delegate attribute access to the true object
@@ -204,11 +208,12 @@ class D4RLSequenceDataset(Dataset):
     def normalize(dataset: torch.Tensor, epsilon=1e-8):
         if not isinstance(dataset, torch.Tensor):
             raise ValueError("Normalizaiton for non tensor dataset is not implemented!")
-        
+
         mean = torch.mean(dataset, dim=(0, 1))
         std = torch.std(dataset, dim=(0, 1))
 
         return (dataset - mean) / (std + epsilon)
+
 
 if __name__ == "__main__":
     dataset = D4RLSequenceDataset("halfcheetah-medium-v2")
